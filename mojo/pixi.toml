@@ -8,6 +8,7 @@ platforms = ["osx-arm64", "linux-64"]
 mojo = "==1.3.0.dev2026111316"
 python = "3.12.*"
 pytest = "*"
+regex = "*"
 
 [tasks]
 test = "python -m pytest tests -q"

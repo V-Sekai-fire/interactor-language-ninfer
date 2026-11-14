@@ -14,6 +14,8 @@ Context is always the empty map and callbacks are the built-in operations below.
 
 from std.collections import Dict, List
 
+from ninfer.text.unicode import Unicode, utf8_codepoint_at
+
 # Terms (what a parser emits).
 comptime T_INT = 0
 comptime T_BIN = 1
@@ -34,7 +36,15 @@ comptime E_TIMES = 8
 comptime E_EVENTUALLY = 9
 comptime E_LOOKAHEAD = 10
 comptime E_PARSEC = 11
+comptime E_UCLASS = 13  # one Unicode code point by category; only `scan` recognises it
 comptime E_SLICE = 12  # ascii_string / utf8_string with min/max whose class cannot match a newline
+
+# Unicode categories for `uclass` (the groups the Qwen split pattern names).
+comptime U_LETTER = 1  # \p{L}
+comptime U_MARK = 2  # \p{M}
+comptime U_NUMBER = 4  # \p{N}
+comptime U_SPACE = 8  # \s
+comptime U_NEWLINE = 16  # [\r\n]
 
 # Traverse operations.
 comptime OP_IGNORE = 0
@@ -287,6 +297,14 @@ struct Parsec(Movable):
 
     def utf8_char(mut self, inc: List[Int], exc: List[Int] = List[Int]()) -> Int:
         return self._char(inc, exc, True)
+
+    def uclass(mut self, include: Int, exclude: Int = 0) -> Int:
+        """One code point that is in any `U_*` category of `include` (any code point when 0) and in
+        none of `exclude`. Recognised by `scan` only."""
+        var e = Elem(E_UCLASS)
+        e.n = include
+        e.m = exclude
+        return self._one(e)
 
     def bytes(mut self, n: Int) -> Int:
         var e = Elem(E_BYTES)
@@ -900,6 +918,105 @@ struct Parsec(Movable):
             self._fail(fail, inner_items, labels, el.positive, st)
             return False
         return False
+
+
+    # --- recognising --------------------------------------------------------------------------
+    # `scan` answers "how far does this parser reach from here" without building terms. It is what
+    # the tokenizer's pre-tokenizer runs per word, so it borrows the tree instead of copying it.
+
+    def scan(self, name: String, input: List[UInt8], pos: Int, unicode: Unicode, context: String) raises -> Int:
+        """End offset of the match of parser `name` at `pos`, or -1 when it does not match."""
+        return self._scan_list(self.lists[self.named[name]], pos, input, unicode, context)
+
+    def _scan_list(
+        self, items: List[Int], pos_in: Int, input: List[UInt8], unicode: Unicode, context: String
+    ) raises -> Int:
+        var pos = pos_in
+        for e in items:
+            pos = self._scan_elem(e, pos, input, unicode, context)
+            if pos < 0:
+                return -1
+        return pos
+
+    def _scan_elem(
+        self, e: Int, pos: Int, input: List[UInt8], unicode: Unicode, context: String
+    ) raises -> Int:
+        ref el = self.elems[e]
+        var k = el.kind
+        if k == E_STRING:
+            var sb = el.s.as_bytes()
+            if pos + len(sb) > len(input):
+                return -1
+            for q in range(len(sb)):
+                if input[pos + q] != sb[q]:
+                    return -1
+            return pos + len(sb)
+        if k == E_CHAR:
+            if pos >= len(input):
+                return -1
+            if el.utf8:
+                var span = utf8_codepoint_at(input, pos, context)
+                if not _class_matches(el, span.value):
+                    return -1
+                return pos + span.length
+            if not _class_matches(el, Int(input[pos])):
+                return -1
+            return pos + 1
+        if k == E_UCLASS:
+            if pos >= len(input):
+                return -1
+            var span = utf8_codepoint_at(input, pos, context)
+            var cp = span.value
+            var cats = 0
+            if unicode.is_letter(cp):
+                cats |= U_LETTER
+            if unicode.is_mark(cp):
+                cats |= U_MARK
+            if unicode.is_number(cp):
+                cats |= U_NUMBER
+            if unicode.is_whitespace(cp):
+                cats |= U_SPACE
+            if cp == 0x0A or cp == 0x0D:
+                cats |= U_NEWLINE
+            if el.n != 0 and (cats & el.n) == 0:
+                return -1
+            if (cats & el.m) != 0:
+                return -1
+            return pos + span.length
+        if k == E_EOS:
+            return pos if pos == len(input) else -1
+        if k == E_LABEL or k == E_TRAVERSE:
+            return self._scan_list(self.lists[el.kids[0]], pos, input, unicode, context)
+        if k == E_PARSEC:
+            return self._scan_list(self.lists[self.named[el.s]], pos, input, unicode, context)
+        if k == E_CHOICE:
+            for alt in el.kids:
+                var end = self._scan_list(self.lists[alt], pos, input, unicode, context)
+                if end >= 0:
+                    return end
+            return -1
+        if k == E_REPEAT:
+            var at = pos
+            while True:
+                var end = self._scan_list(self.lists[el.kids[0]], at, input, unicode, context)
+                if end < 0:
+                    break
+                if end == at:
+                    break
+                at = end
+            return at
+        if k == E_TIMES:
+            var at = pos
+            for _ in range(el.n):
+                var end = self._scan_list(self.lists[el.kids[0]], at, input, unicode, context)
+                if end < 0:
+                    break
+                at = end
+            return at
+        if k == E_LOOKAHEAD:
+            var end = self._scan_list(self.lists[el.kids[0]], pos, input, unicode, context)
+            return pos if (end >= 0) == el.positive else -1
+        raise Error("Parsec.scan does not support this combinator")
 
 
 def _newline_possible(inc: List[Int], exc: List[Int]) -> Bool:
