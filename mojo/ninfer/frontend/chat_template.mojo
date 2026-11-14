@@ -8,12 +8,12 @@ byte offsets at which the engine executes the assistant turn. The bytes that cam
 request (message text, tool definitions) are reported as literal spans, so the tokenizer never
 reads a control token out of user text.
 
-Not ported, because nothing here consumes them yet: media parts (a message with an image or video
-is not representable in `ChatMessage`), and the prefix-cache bookkeeping of the C++ renderer
-(`message_boundaries`, `cache_boundaries`, `rewrite_checkpoint`).
+Media parts are carried as kinds only (the renderer needs the modality and order of each item, not
+its bytes). The prefix-cache bookkeeping of the C++ renderer is here too: the byte boundary after
+each message, the boundaries the request's cache markers name, and the rewrite checkpoint.
 """
 
-from std.collections import List
+from std.collections import Dict, List
 from std.ffi import external_call
 
 from ninfer.artifact.json import (
@@ -31,6 +31,7 @@ from ninfer.artifact.json import (
 from ninfer.text.jinja.grisu import dump_double
 from ninfer.text.jinja.template import InputRegion, JinjaTemplate, OutputRegion, TemplateOutput
 from ninfer.text.jinja.value import json_escape
+from ninfer.text.unicode import Unicode, utf8_codepoints
 
 comptime ROLE_SYSTEM = 0
 comptime ROLE_DEVELOPER = 1
@@ -83,20 +84,67 @@ struct ToolCall(Copyable, Movable):
         self.arguments_json = arguments_json
 
 
+comptime PART_TEXT = 0
+comptime PART_IMAGE = 1
+comptime PART_VIDEO = 2
+
+comptime MODALITY_IMAGE = 1
+comptime MODALITY_VIDEO = 2
+
+
+struct ChatPart(Copyable, Movable):
+    var kind: Int
+    var text: String
+
+    def __init__(out self, kind: Int, text: String = String()):
+        self.kind = kind
+        self.text = text
+
+
 struct ChatMessage(Copyable, Movable):
     var role: Int
-    var parts: List[String]  # text parts; media parts are not supported
+    var parts: List[ChatPart]
     var reasoning_content: String
     var tool_calls: List[ToolCall]
     var tool_call_id: String
 
     def __init__(out self, role: Int, text: String = String()):
         self.role = role
-        self.parts = List[String]()
-        self.parts.append(text)
+        self.parts = List[ChatPart]()
+        self.parts.append(ChatPart(PART_TEXT, text))
         self.reasoning_content = String()
         self.tool_calls = List[ToolCall]()
         self.tool_call_id = String()
+
+    def has_media(self) -> Bool:
+        for part in self.parts:
+            if part.kind != PART_TEXT:
+                return True
+        return False
+
+
+comptime LOC_MESSAGE_BOUNDARY = 0
+comptime LOC_MESSAGE_PART_BOUNDARY = 1
+comptime LOC_LEADING_INSTRUCTION_BOUNDARY = 2
+comptime LOC_TOOL_BOUNDARY = 3
+
+
+struct PromptCacheMarker(Copyable, Movable):
+    """Where a request asks for a cache boundary. The marker's kind and evidence only matter to the
+    cache, so they are not carried."""
+
+    var location: Int
+    var after_message_count: Int
+    var leading_instruction_bytes: Int  # within the untrimmed leading System/Developer message
+    var after_tool_count: Int
+    var after_message_part_count: Int
+
+    def __init__(out self, location: Int):
+        self.location = location
+        self.after_message_count = 0
+        self.leading_instruction_bytes = 0
+        self.after_tool_count = 0
+        self.after_message_part_count = 0
 
 
 struct ChatRenderOptions(Copyable, Movable):
@@ -110,6 +158,7 @@ struct ChatRenderOptions(Copyable, Movable):
     var tool_jsons: List[String]
     var forced_tool_name: String
     var tool_call_syntax: Int
+    var cache_markers: List[PromptCacheMarker]
 
     def __init__(out self):
         self.continue_final_assistant = False
@@ -122,6 +171,25 @@ struct ChatRenderOptions(Copyable, Movable):
         self.tool_jsons = List[String]()
         self.forced_tool_name = String()
         self.tool_call_syntax = SYNTAX_QWEN
+        self.cache_markers = List[PromptCacheMarker]()
+
+
+comptime CHECKPOINT_TURN_CLOSURE = 0
+comptime CHECKPOINT_RESPONSE_REPLAY = 1
+comptime NONE = -1  # an `std::optional` that holds no value
+
+
+struct MediaPlaceholder(Copyable, Movable):
+    var begin: Int
+    var end: Int
+    var modality: Int
+    var item_index: Int
+
+    def __init__(out self, begin: Int, end: Int, modality: Int, item_index: Int):
+        self.begin = begin
+        self.end = end
+        self.modality = modality
+        self.item_index = item_index
 
 
 struct RenderedChat(Movable):
@@ -129,14 +197,28 @@ struct RenderedChat(Movable):
     var literal_begin: List[Int]
     var literal_end: List[Int]
     var starts_in_reasoning: Bool
+    var media_placeholders: List[MediaPlaceholder]
+    var rewrite_checkpoint_kind: Int  # NONE, or a CHECKPOINT_*
+    var rewrite_checkpoint_offset: Int
     var execution_boundaries: List[Int]
+    # Index n is the exact byte frontier after serializing the first n input messages. NONE means
+    # the template has no independent boundary there (for example, before a leading instruction
+    # message folded into the system preamble).
+    var message_boundaries: List[Int]
+    # One rendered byte boundary per requested cache marker.
+    var cache_boundaries: List[Int]
 
     def __init__(out self):
         self.text = String()
         self.literal_begin = List[Int]()
         self.literal_end = List[Int]()
         self.starts_in_reasoning = False
+        self.media_placeholders = List[MediaPlaceholder]()
+        self.rewrite_checkpoint_kind = NONE
+        self.rewrite_checkpoint_offset = 0
         self.execution_boundaries = List[Int]()
+        self.message_boundaries = List[Int]()
+        self.cache_boundaries = List[Int]()
 
 
 # --- JSON context ------------------------------------------------------------------------------
@@ -459,11 +541,13 @@ struct MessageLayout(Copyable, Movable):
 
 struct PromptLayout(Movable):
     var messages: List[MessageLayout]
+    var media_placeholders: List[MediaPlaceholder]
     var execution_boundaries: List[Int]
     var starts_in_reasoning: Bool
 
     def __init__(out self):
         self.messages = List[MessageLayout]()
+        self.media_placeholders = List[MediaPlaceholder]()
         self.execution_boundaries = List[Int]()
         self.starts_in_reasoning = False
 
@@ -530,7 +614,7 @@ def _min_pos(a: Int, b: Int) -> Int:
     return a if a < b else b
 
 
-def inspect_prompt_layout(output: TemplateOutput, media_count: Int) raises -> PromptLayout:
+def inspect_prompt_layout(output: TemplateOutput, media: List[Int]) raises -> PromptLayout:
     var result = PromptLayout()
     var source = output.text.as_bytes()
     var size = len(source)
@@ -596,7 +680,6 @@ def inspect_prompt_layout(output: TemplateOutput, media_count: Int) raises -> Pr
 
     # Gemma 4's template writes one <|image|> or <|video|> per media input, in input order; the
     # processor adds the begin and end markers around the soft tokens it expands it into.
-    var placeholders = 0
     if gemma:
         var p = 0
         while p < size:
@@ -605,11 +688,13 @@ def inspect_prompt_layout(output: TemplateOutput, media_count: Int) raises -> Pr
             var pad = _min_pos(image, video)
             if pad == NPOS:
                 break
-            if placeholders >= media_count:
+            var modality = MODALITY_IMAGE if pad == image else MODALITY_VIDEO
+            var index = len(result.media_placeholders)
+            if index >= len(media) or media[index] != modality:
                 raise Error("chat template media placeholders must match input count, type and order")
-            placeholders += 1
-            p = pad + 9  # <|image|> and <|video|>
-        if placeholders != media_count:
+            result.media_placeholders.append(MediaPlaceholder(pad, pad + 9, modality, index))  # <|image|> and <|video|>
+            p = pad + 9
+        if len(result.media_placeholders) != len(media):
             raise Error("chat template omitted an input media placeholder")
         return result^
     # Each media input contributes one complete Qwen placeholder in input order.
@@ -620,7 +705,8 @@ def inspect_prompt_layout(output: TemplateOutput, media_count: Int) raises -> Pr
         var pad = _min_pos(image, video)
         if pad == NPOS:
             break
-        var token = String("<|image_pad|>") if pad == image else String("<|video_pad|>")
+        var modality = MODALITY_IMAGE if pad == image else MODALITY_VIDEO
+        var token = String("<|image_pad|>") if modality == MODALITY_IMAGE else String("<|video_pad|>")
         var vs = String(_VISION_START)
         var ve = String(_VISION_END)
         if (
@@ -630,11 +716,12 @@ def inspect_prompt_layout(output: TemplateOutput, media_count: Int) raises -> Pr
             or not _template_bytes(output, pad - vs.byte_length(), pad + token.byte_length() + ve.byte_length())
         ):
             raise Error("chat template media pad requires a complete Qwen vision wrapper")
-        if placeholders >= media_count:
+        var index = len(result.media_placeholders)
+        if index >= len(media) or media[index] != modality:
             raise Error("chat template media placeholders must match input count, type and order")
-        placeholders += 1
+        result.media_placeholders.append(MediaPlaceholder(pad, pad + token.byte_length(), modality, index))
         p = pad + token.byte_length()
-    if placeholders != media_count:
+    if len(result.media_placeholders) != len(media):
         raise Error("chat template omitted an input media placeholder")
     return result^
 
@@ -662,12 +749,113 @@ struct Span2(Copyable, Movable):
         self.end = end
 
 
+# --- boundaries --------------------------------------------------------------------------------
+
+
+def _source_boundary(output: TemplateOutput, tag: Int, offset: Int) -> Int:
+    """Where byte `offset` of the source text that `tag` named landed in the output, NONE when it
+    did not land, or landed in two places."""
+    var result = NONE
+    for r in output.regions:
+        if r.tag != tag or r.source_offset < 0:
+            continue
+        var begin = r.source_offset
+        if offset < begin or offset - begin > r.end - r.begin:
+            continue
+        var mapped = r.begin + offset - begin
+        if result != NONE and result != mapped:
+            return NONE
+        result = mapped
+    return result
+
+
+def _containing_message(layout: PromptLayout, begin: Int, end: Int) -> Int:
+    for i in range(len(layout.messages)):
+        ref message = layout.messages[i]
+        if begin >= message.content_begin and end <= message.content_end:
+            return i
+    return NONE
+
+
+def _same_prefix(lhs: TemplateOutput, rhs: TemplateOutput, size: Int) -> Bool:
+    """Equal text alone does not prove equal control-token interpretation."""
+    var a = lhs.text.as_bytes()
+    var b = rhs.text.as_bytes()
+    if len(a) < size or len(b) < size:
+        return False
+    for k in range(size):
+        if a[k] != b[k]:
+            return False
+    var i = 0
+    while True:
+        var left = i < len(lhs.literal_begin) and lhs.literal_begin[i] < size
+        var right = i < len(rhs.literal_begin) and rhs.literal_begin[i] < size
+        if not left or not right:
+            return left == right
+        if lhs.literal_begin[i] != rhs.literal_begin[i] or min(lhs.literal_end[i], size) != min(rhs.literal_end[i], size):
+            return False
+        i += 1
+
+
+def _real_user(message: ChatMessage, unicode: Unicode) raises -> Bool:
+    if message.role != ROLE_USER:
+        return False
+    if message.has_media():
+        return True
+    var content = String()
+    for part in message.parts:
+        content += part.text
+    var bytes = _bytes_of(content)
+    var chars = utf8_codepoints(bytes, "message content")
+    var begin = 0
+    var end = len(chars)
+    while begin < end and unicode.is_whitespace(chars[begin].value):
+        begin += 1
+    while end > begin and unicode.is_whitespace(chars[end - 1].value):
+        end -= 1
+    var offset = chars[begin].offset if begin < len(chars) else len(bytes)
+    var limit = chars[end].offset if end < len(chars) else len(bytes)
+    var source = content.as_bytes()
+    return not (_starts_with(source, offset, limit, "<tool_response>") and _ends_with(source, offset, limit, "</tool_response>"))
+
+
+def _ends_with(source: Span[UInt8, _], begin: Int, end: Int, suffix: String) -> Bool:
+    var n = suffix.byte_length()
+    return end - begin >= n and _starts_with(source, end - n, end, suffix)
+
+
+# Where a message's content came from, so rendered regions can be traced back to it.
+struct ContentSource(Copyable, Movable):
+    var tag: Int
+    var part_ends: List[Int]
+    var part_tags: List[Int]
+    var part_media: List[Int]  # NONE for a text part
+    var reasoning_tag: Int
+
+    def __init__(out self):
+        self.tag = 0
+        self.part_ends = List[Int]()
+        self.part_tags = List[Int]()
+        self.part_media = List[Int]()
+        self.reasoning_tag = 0
+
+
+def _joined(texts: List[String], count: Int) -> String:
+    var out = String("[")
+    for i in range(count):
+        if i > 0:
+            out += ","
+        out += texts[i]
+    return out + "]"
+
+
 # --- the compiled template ---------------------------------------------------------------------
 
 
 struct CompiledChatTemplate(Movable):
     var compiled: JinjaTemplate
     var special_tokens: JObj
+    var unicode: Unicode
     # One bit per thinking effort, minimal through max, that the template renders without raising,
     # found by rendering each once at resolve. A rejected effort renders as the nearest accepted
     # one. Every bit is set until probing ends and whenever the probe cannot render.
@@ -676,6 +864,7 @@ struct CompiledChatTemplate(Movable):
     def __init__(out self, source: String, source_name: String = "chat_template.jinja", special_tokens_json: String = "{}") raises:
         self.compiled = JinjaTemplate(source, source_name)
         self.special_tokens = _object_of(special_tokens_json, "special tokens")
+        self.unicode = Unicode()
         self.accepted_efforts = _ALL_EFFORTS
         self.accepted_efforts = _probe_accepted_efforts(self.compiled, self.special_tokens)
 
@@ -694,6 +883,55 @@ struct CompiledChatTemplate(Movable):
                 raise e^
             return self._render_as(messages, options, True)
 
+    def _try_render(
+        self,
+        context: JObj,
+        regions: List[InputRegion],
+        controls: List[String],
+        mut rendered: TemplateOutput,
+    ) raises -> Bool:
+        """Renders a probe. A template error means the probe has no independent serialization
+        (`std::invalid_argument` in C++); a malformed JSON document is a bug and propagates."""
+        try:
+            var doc = Json()
+            var root = _parse(context.dump(), "chat context", doc)
+            rendered = self.compiled.render(doc, root, regions, controls, _now())
+            return True
+        except e:
+            if String(e).startswith(_JSON_ERROR):
+                raise e^
+            return False
+
+    def _prefix(
+        self,
+        count: Int,
+        n_messages: Int,
+        context: JObj,
+        message_texts: List[String],
+        regions: List[InputRegion],
+        controls: List[String],
+        output: TemplateOutput,
+        mut cache: Dict[Int, Int],
+        mut result: RenderedChat,
+    ) raises -> Int:
+        """The byte frontier after the first `count` messages, when rendering just those messages
+        yields exactly the same bytes and literal spans as the full render."""
+        if count > n_messages:
+            return NONE
+        if count in cache:
+            return cache[count]
+        var boundary = NONE
+        var probe = context.copy()
+        probe.set("messages", _joined(message_texts, count))
+        probe.set("add_generation_prompt", "false")
+        var rendered = TemplateOutput()
+        if self._try_render(probe, regions, controls, rendered):
+            if _same_prefix(output, rendered, rendered.text.byte_length()):
+                boundary = rendered.text.byte_length()
+        cache[count] = boundary
+        result.message_boundaries[count] = boundary
+        return boundary
+
     def _render_as(
         self, messages: List[ChatMessage], options: ChatRenderOptions, developer_as_system: Bool
     ) raises -> RenderedChat:
@@ -705,6 +943,7 @@ struct CompiledChatTemplate(Movable):
             ref final = messages[len(messages) - 1]
             if (
                 final.role != ROLE_ASSISTANT
+                or final.has_media()
                 or final.reasoning_content.byte_length() > 0
                 or len(final.tool_calls) > 0
                 or (context.has("enable_thinking") and context.get("enable_thinking") == "true")
@@ -714,27 +953,54 @@ struct CompiledChatTemplate(Movable):
         context.set("add_generation_prompt", _bool_text(not continuation and options.add_generation_prompt))
         var regions = List[InputRegion]()
         var next_tag = 1
-        var content_tags = List[Int]()
+        var sources = List[ContentSource]()
+        var media = List[Int]()
         var message_texts = List[String]()
         for i in range(len(messages)):
             ref message = messages[i]
             if _instruction(message.role) and (
-                message.reasoning_content.byte_length() > 0
+                message.has_media()
+                or message.reasoning_content.byte_length() > 0
                 or len(message.tool_calls) > 0
                 or message.tool_call_id.byte_length() > 0
             ):
                 raise Error("system and developer messages may contain only text")
             var role = String("system") if (message.role == ROLE_DEVELOPER and developer_as_system) else role_name(message.role)
             var pointer = "/messages/" + String(i)
-            var content = String()
-            for part in message.parts:
-                content += part
-            var value = '{"role":' + json_escape(role, False) + ',"content":' + json_escape(content, False)
-            content_tags.append(next_tag)
-            regions.append(InputRegion(pointer + "/content", next_tag))
-            next_tag += 1
+            var origin = ContentSource()
+            var value = '{"role":' + json_escape(role, False) + ',"content":'
+            if not message.has_media():
+                var content = String()
+                for part in message.parts:
+                    content += part.text
+                    origin.part_ends.append(content.byte_length())
+                value += json_escape(content, False)
+                origin.tag = next_tag
+                regions.append(InputRegion(pointer + "/content", next_tag))
+                next_tag += 1
+            else:
+                value += "["
+                for j in range(len(message.parts)):
+                    ref part = message.parts[j]
+                    var item = pointer + "/content/" + String(j)
+                    if j > 0:
+                        value += ","
+                    if part.kind == PART_TEXT:
+                        value += '{"type":"text","text":' + json_escape(part.text, False) + "}"
+                        origin.part_tags.append(next_tag)
+                        origin.part_media.append(NONE)
+                        regions.append(InputRegion(item + "/text", next_tag))
+                        next_tag += 1
+                    else:
+                        var image = part.kind == PART_IMAGE
+                        value += '{"type":' + ('"image"' if image else '"video"') + "}"
+                        origin.part_media.append(len(media))
+                        media.append(MODALITY_IMAGE if image else MODALITY_VIDEO)
+                        origin.part_tags.append(0)
+                value += "]"
             if message.reasoning_content.byte_length() > 0:
                 value += ',"reasoning_content":' + json_escape(message.reasoning_content, False)
+                origin.reasoning_tag = next_tag
                 regions.append(InputRegion(pointer + "/reasoning_content", next_tag))
                 next_tag += 1
             if len(message.tool_calls) > 0:
@@ -758,12 +1024,9 @@ struct CompiledChatTemplate(Movable):
                 value += ',"tool_call_id":' + json_escape(message.tool_call_id, False)
             value += "}"
             message_texts.append(value^)
-        var joined = String("[")
-        for i in range(len(message_texts)):
-            if i > 0:
-                joined += ","
-            joined += message_texts[i]
-        context.set("messages", joined + "]")
+            sources.append(origin^)
+        context.set("messages", _joined(message_texts, len(message_texts)))
+        var tool_tags = List[Int]()
         if len(options.tool_jsons) > 0:
             var tools = String("[")
             for i in range(len(options.tool_jsons)):
@@ -773,6 +1036,7 @@ struct CompiledChatTemplate(Movable):
                     tools += ","
                 tools += options.tool_jsons[i]
                 regions.append(InputRegion("/tools/" + String(i), next_tag))
+                tool_tags.append(next_tag)
                 next_tag += 1
             context.set("tools", tools + "]")
         var controls = _control_variables(self.special_tokens)
@@ -789,9 +1053,9 @@ struct CompiledChatTemplate(Movable):
         var doc = Json()
         var root = _parse(context.dump(), "chat context", doc)
         var output = self.compiled.render(doc, root, regions, controls, _now())
-        var layout = inspect_prompt_layout(output, 0)
+        var layout = inspect_prompt_layout(output, media)
         if continuation:
-            var content = _unique_output_region(output, content_tags[len(content_tags) - 1])
+            var content = _unique_output_region(output, sources[len(sources) - 1].tag)
             if content.begin < 0 or len(layout.messages) == 0:
                 raise Error("chat template does not expose the final assistant content for continuation")
             ref last = layout.messages[len(layout.messages) - 1]
@@ -822,10 +1086,159 @@ struct CompiledChatTemplate(Movable):
                 le[len(le) - 1] = min(le[len(le) - 1], limit)
             output.literal_begin = lb^
             output.literal_end = le^
-            layout = inspect_prompt_layout(output, 0)
+            layout = inspect_prompt_layout(output, media)
         var result = RenderedChat()
         result.starts_in_reasoning = layout.starts_in_reasoning
+        result.media_placeholders = layout.media_placeholders.copy()
         result.execution_boundaries = layout.execution_boundaries.copy()
+        for _ in range(len(messages) + 1):
+            result.message_boundaries.append(NONE)
+        for _ in range(len(options.cache_markers)):
+            result.cache_boundaries.append(NONE)
+
+        # Only requested/structural boundaries need proof, independent of history length.
+        var prefix_cache = Dict[Int, Int]()
+
+        # Associate actual input regions with complete ChatML blocks. Several tool results may
+        # share one user block; their individual closing tags provide the intermediate boundaries.
+        var message_blocks = List[Int]()
+        var content_begin = List[Int]()
+        var content_end = List[Int]()
+        var block_users = List[Int]()
+        for _ in range(len(layout.messages)):
+            block_users.append(0)
+        for i in range(len(sources)):
+            ref origin = sources[i]
+            var extent_begin = NONE
+            var extent_end = NONE
+            for r in output.regions:
+                var matches = r.tag == origin.tag or r.tag == origin.reasoning_tag
+                for t in origin.part_tags:
+                    if r.tag == t:
+                        matches = True
+                if matches:
+                    if extent_begin == NONE:
+                        extent_begin = r.begin
+                        extent_end = r.end
+                    else:
+                        extent_begin = min(extent_begin, r.begin)
+                        extent_end = max(extent_end, r.end)
+            for index in origin.part_media:
+                if index != NONE:
+                    ref placeholder = layout.media_placeholders[index]
+                    if extent_begin == NONE:
+                        extent_begin = placeholder.begin
+                        extent_end = placeholder.end
+                    else:
+                        extent_begin = min(extent_begin, placeholder.begin)
+                        extent_end = max(extent_end, placeholder.end)
+            content_begin.append(extent_begin)
+            content_end.append(extent_end)
+            var block = NONE
+            if extent_begin != NONE:
+                block = _containing_message(layout, extent_begin, extent_end)
+            message_blocks.append(block)
+            if block != NONE:
+                block_users[block] += 1
+        for i in range(len(messages)):
+            if message_blocks[i] == NONE:
+                continue
+            ref block = layout.messages[message_blocks[i]]
+            if block.closed and block_users[message_blocks[i]] == 1:
+                result.message_boundaries[i + 1] = block.end
+            if messages[i].role == ROLE_TOOL and content_begin[i] != NONE:
+                var close = String("\n</tool_response>")
+                var pos = _find_from(output.text.as_bytes(), close, content_end[i])
+                if pos != NPOS and pos + close.byte_length() <= block.content_end:
+                    var end = pos + close.byte_length()
+                    var sourced = _overlaps(output, content_end[i], end)
+                    if not sourced:
+                        result.message_boundaries[i + 1] = block.end if (end == block.content_end and block.closed) else end
+        if _instruction(messages[0].role) and result.message_boundaries[1] == NONE:
+            _ = self._prefix(1, len(messages), context, message_texts, regions, controls, output, prefix_cache, result)
+
+        var generation_begin = NONE
+        if continuation:
+            generation_begin = layout.messages[len(layout.messages) - 1].begin
+        elif options.add_generation_prompt:
+            generation_begin = self._prefix(len(messages), len(messages), context, message_texts, regions, controls, output, prefix_cache, result)
+        if not options.add_generation_prompt and not continuation:
+            result.message_boundaries[len(messages)] = output.text.byte_length()
+        var first_tail_assistant = NONE
+        if not continuation:
+            var query_message = NONE
+            var i = len(messages)
+            while i > 0:
+                if _real_user(messages[i - 1], self.unicode):
+                    query_message = i - 1
+                    break
+                # Imported history may begin with a tool result after its user turn was removed.
+                if query_message == NONE and messages[i - 1].role == ROLE_TOOL:
+                    query_message = i - 1
+                i -= 1
+            if query_message != NONE and message_blocks[query_message] != NONE:
+                for j in range(message_blocks[query_message] + 1, len(layout.messages)):
+                    if layout.messages[j].role == ROLE_ASSISTANT:
+                        first_tail_assistant = j
+                        break
+        # Select a recovery point from the template's observed serialization. A single ordinary
+        # next-turn probe distinguishes retained history from a rewritten open turn, including
+        # templates whose defaults or aliases differ from the typed request hint. This only
+        # chooses the checkpoint to retain: subsequent requests still require exact token/state
+        # identity.
+        var retain_open_turn = context.has("preserve_thinking") and context.get("preserve_thinking") == "true"
+        if first_tail_assistant != NONE and layout.messages[first_tail_assistant].closed:
+            var probe = context.copy()
+            probe.set("messages", _joined(message_texts, len(message_texts)).removesuffix("]") + ',{"role":"user","content":""}]')
+            probe.set("add_generation_prompt", "false")
+            var next_turn = TemplateOutput()
+            if self._try_render(probe, List[InputRegion](), controls, next_turn):
+                var history_bytes = generation_begin if generation_begin != NONE else output.text.byte_length()
+                retain_open_turn = _same_prefix(next_turn, output, history_bytes)
+            else:
+                retain_open_turn = False
+        if generation_begin != NONE and generation_begin > 0:
+            result.rewrite_checkpoint_kind = (
+                CHECKPOINT_RESPONSE_REPLAY if (continuation or retain_open_turn) else CHECKPOINT_TURN_CLOSURE
+            )
+            result.rewrite_checkpoint_offset = generation_begin
+        if not continuation and not retain_open_turn and first_tail_assistant != NONE:
+            var begin = layout.messages[first_tail_assistant].begin
+            if begin > 0:
+                result.rewrite_checkpoint_kind = CHECKPOINT_TURN_CLOSURE
+                result.rewrite_checkpoint_offset = begin
+        for i in range(len(options.cache_markers)):
+            ref marker = options.cache_markers[i]
+            if marker.location == LOC_MESSAGE_BOUNDARY:
+                if marker.after_message_count < len(result.message_boundaries):
+                    if result.message_boundaries[marker.after_message_count] == NONE:
+                        result.message_boundaries[marker.after_message_count] = self._prefix(marker.after_message_count, len(messages), context, message_texts, regions, controls, output, prefix_cache, result)
+                    result.cache_boundaries[i] = result.message_boundaries[marker.after_message_count]
+            elif marker.location == LOC_LEADING_INSTRUCTION_BOUNDARY:
+                if _instruction(messages[0].role):
+                    result.cache_boundaries[i] = _source_boundary(output, sources[0].tag, marker.leading_instruction_bytes)
+            elif marker.location == LOC_TOOL_BOUNDARY:
+                if marker.after_tool_count != 0 and marker.after_tool_count <= len(tool_tags):
+                    var region = _unique_output_region(output, tool_tags[marker.after_tool_count - 1])
+                    if region.begin >= 0:
+                        result.cache_boundaries[i] = region.end
+            elif marker.location == LOC_MESSAGE_PART_BOUNDARY:
+                if (
+                    marker.after_message_count != 0
+                    and marker.after_message_count <= len(sources)
+                    and marker.after_message_part_count != 0
+                ):
+                    ref origin = sources[marker.after_message_count - 1]
+                    var part = marker.after_message_part_count - 1
+                    if part < len(origin.part_ends):
+                        result.cache_boundaries[i] = _source_boundary(output, origin.tag, origin.part_ends[part])
+                    elif part < len(origin.part_tags):
+                        if origin.part_tags[part] != 0:
+                            var region = _unique_output_region(output, origin.part_tags[part])
+                            if region.begin >= 0:
+                                result.cache_boundaries[i] = region.end
+                        elif origin.part_media[part] != NONE:
+                            result.cache_boundaries[i] = layout.media_placeholders[origin.part_media[part]].end + String(_VISION_END).byte_length()
         var text = _bytes_of(output.text)
         var lit_begin = output.literal_begin.copy()
         var lit_end = output.literal_end.copy()

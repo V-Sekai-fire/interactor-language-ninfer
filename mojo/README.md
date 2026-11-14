@@ -28,7 +28,7 @@ Rules for the split:
 | 3b | BPE tokenizer | `src/models/qwen3_5/frontend/tokenizer.*` | #10 |
 | 3c | Jinja lexer | `third_party/llama-jinja/jinja/lexer.*` | #11 |
 | 3d | Jinja parser, values, builtins, runtime; `JinjaTemplate` with provenance | `llama-jinja/jinja/*`, `src/text/jinja.*` | done |
-| 3e | Tool-call parser and decoder; chat template renderer (text, tools, tool calls, thinking, forced calls, continuation; not media or the prefix-cache boundaries) | `frontend/tool_call_parser.*`, `chat_template.*`, `prompt_layout.*` | done |
+| 3e | Tool-call parser and decoder; chat template renderer (text, media, tools, tool calls, thinking, forced calls, continuation, message and cache boundaries, rewrite checkpoint) | `frontend/tool_call_parser.*`, `chat_template.*`, `prompt_layout.*` | done |
 | 4 | Materializer and host transcode | `src/artifact/{materializer,transcode}` | |
 | 5 | Ternary and groupwise-int matmul kernels (Mojo GPU) | `src/ops` | |
 | 6 | Gated DeltaNet layer, RV32IM in-weights computer | `src/ops`, `src/models/qwen3_5` | |

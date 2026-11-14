@@ -53,7 +53,11 @@ int main(int, char** argv) {
             for (const auto& m : doc["messages"]) {
                 FChatMessage msg;
                 msg.role = static_cast<ChatRole>(m["role"].get<int>());
-                for (const auto& p : m["parts"]) msg.parts.push_back(ChatPart::text_part(p.get<std::string>()));
+                for (const auto& p : m["parts"]) {
+                    if (p.is_string()) msg.parts.push_back(ChatPart::text_part(p.get<std::string>()));
+                    else if (p["kind"].get<int>() == 1) msg.parts.push_back(ChatPart::image(MediaData{}));
+                    else msg.parts.push_back(ChatPart::video(MediaData{}));
+                }
                 if (m.contains("reasoning")) msg.reasoning_content = m["reasoning"].get<std::string>();
                 if (m.contains("tool_call_id")) msg.tool_call_id = m["tool_call_id"].get<std::string>();
                 if (m.contains("tool_calls")) {
@@ -74,6 +78,17 @@ int main(int, char** argv) {
             options.add_vision_id             = opt(o, "add_vision_id").value_or(false);
             options.forced_tool_name          = o.value("forced", "");
             if (o.contains("syntax")) options.tool_call_syntax = static_cast<ToolCallSyntax>(o["syntax"].get<int>());
+            if (o.contains("markers")) {
+                for (const auto& mk : o["markers"]) {
+                    PromptCacheMarker marker;
+                    marker.location = static_cast<PromptCacheMarkerLocation>(mk["loc"].get<int>());
+                    marker.after_message_count = mk["messages"].get<std::uint32_t>();
+                    marker.leading_instruction_bytes = mk["bytes"].get<std::uint32_t>();
+                    marker.after_tool_count = mk["tools"].get<std::uint32_t>();
+                    marker.after_message_part_count = mk["parts"].get<std::uint32_t>();
+                    options.cache_markers.push_back(marker);
+                }
+            }
             if (o.contains("tools")) for (const auto& t : o["tools"]) options.tool_jsons.push_back(t.get<std::string>());
             const auto r = compiled->render(messages, options);
             std::cout << "text " << hex(r.text) << "\n";
@@ -83,6 +98,14 @@ int main(int, char** argv) {
             for (std::size_t i = 0; i < r.rewrite_execution_boundaries.size(); ++i)
                 std::cout << (i ? "," : "") << r.rewrite_execution_boundaries[i];
             std::cout << "\n";
+            for (const auto& pl : r.media_placeholders)
+                std::cout << "media " << pl.bytes.begin << " " << pl.bytes.end << " " << static_cast<int>(pl.modality) << " " << pl.item_index << "\n";
+            std::cout << "msgb ";
+            for (const auto& b : r.message_boundaries) std::cout << (b ? std::to_string(*b) : "-") << ",";
+            std::cout << "\ncacheb ";
+            for (const auto& b : r.cache_boundaries) std::cout << (b ? std::to_string(*b) : "-") << ",";
+            std::cout << "\nrewrite " << (r.rewrite_checkpoint ? static_cast<int>(r.rewrite_checkpoint->kind) : -1) << " "
+                      << (r.rewrite_checkpoint ? r.rewrite_checkpoint->offset : 0) << "\n";
         } catch (const nlohmann::json::exception&) { std::cout << "errjson\n";
         } catch (const std::exception& e) { std::cout << "err " << hex(e.what()) << "\n"; }
     }

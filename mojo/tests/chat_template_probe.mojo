@@ -10,7 +10,10 @@ from ninfer.frontend.chat_template import (
     ChatMessage,
     ChatRenderOptions,
     CompiledChatTemplate,
+    ChatPart,
+    PromptCacheMarker,
     ToolCall,
+    NONE,
     UNSET,
 )
 from ninfer.text.jinja.jstring import string_bytes
@@ -66,10 +69,14 @@ def main() raises:
             for i in range(doc.size(ms)):
                 var m = doc.at(ms, i)
                 var msg = ChatMessage(Int(doc.nodes[doc.find(m, "role")].u))
-                msg.parts = List[String]()
+                msg.parts = List[ChatPart]()
                 var ps = doc.find(m, "parts")
                 for k in range(doc.size(ps)):
-                    msg.parts.append(doc.string(doc.at(ps, k)))
+                    var part = doc.at(ps, k)
+                    if doc.is_string(part):
+                        msg.parts.append(ChatPart(0, doc.string(part)))
+                    else:
+                        msg.parts.append(ChatPart(Int(doc.nodes[doc.find(part, "kind")].u)))
                 msg.reasoning_content = _str(doc, m, "reasoning")
                 msg.tool_call_id = _str(doc, m, "tool_call_id")
                 var tcs = doc.find(m, "tool_calls")
@@ -94,6 +101,16 @@ def main() raises:
             var syntax = doc.find(o, "syntax")
             if syntax >= 0:
                 options.tool_call_syntax = Int(doc.nodes[syntax].u)
+            var markers = doc.find(o, "markers")
+            if markers >= 0:
+                for k in range(doc.size(markers)):
+                    var mk = doc.at(markers, k)
+                    var marker = PromptCacheMarker(Int(doc.nodes[doc.find(mk, "loc")].u))
+                    marker.after_message_count = Int(doc.nodes[doc.find(mk, "messages")].u)
+                    marker.leading_instruction_bytes = Int(doc.nodes[doc.find(mk, "bytes")].u)
+                    marker.after_tool_count = Int(doc.nodes[doc.find(mk, "tools")].u)
+                    marker.after_message_part_count = Int(doc.nodes[doc.find(mk, "parts")].u)
+                    options.cache_markers.append(marker^)
             var tools = doc.find(o, "tools")
             if tools >= 0:
                 for k in range(doc.size(tools)):
@@ -109,6 +126,18 @@ def main() raises:
                     ex += ","
                 ex += String(r.execution_boundaries[k])
             print("exec", ex)
+            for k in range(len(r.media_placeholders)):
+                ref pl = r.media_placeholders[k]
+                print("media", pl.begin, pl.end, pl.modality, pl.item_index)
+            var mb = String()
+            for k in range(len(r.message_boundaries)):
+                mb += ("-" if r.message_boundaries[k] == NONE else String(r.message_boundaries[k])) + ","
+            print("msgb", mb)
+            var cb = String()
+            for k in range(len(r.cache_boundaries)):
+                cb += ("-" if r.cache_boundaries[k] == NONE else String(r.cache_boundaries[k])) + ","
+            print("cacheb", cb)
+            print("rewrite", r.rewrite_checkpoint_kind, r.rewrite_checkpoint_offset)
         except e:
             var msg = String(e)
             if msg.startswith("JSON parse error"):

@@ -58,12 +58,32 @@ TEXTS = ["Hello", "What is 2+2?", "", "  padded  ", "line1\nline2\n", "naïve �
 ARGS = ['{"expression": "1+2"}', "{}", "", '{"q": "x", "n": 5, "nested": {"a": [1, 2.5, null, true]}}', '{"expression": "é\\n"}', "{bad", "[1]", '"s"', "3"]
 
 
+def user_parts(rng):
+    r = rng.random()
+    if r < 0.78:
+        return [rng.choice(TEXTS)]
+    if r < 0.86:
+        return [rng.choice(TEXTS), rng.choice(TEXTS)]
+    parts = []
+    for _ in range(rng.randint(1, 4)):
+        parts.append(rng.choice([{"kind": 1}, {"kind": 2}, rng.choice(TEXTS), rng.choice(TEXTS)]))
+    return parts
+
+
+def markers(rng, n_messages):
+    out = []
+    for _ in range(rng.randint(1, 4)):
+        out.append({"loc": rng.randint(0, 3), "messages": rng.randint(0, n_messages + 1), "bytes": rng.choice([0, 1, 3, 5, 12, 40]),
+                    "tools": rng.randint(0, 3), "parts": rng.randint(0, 4)})
+    return out
+
+
 def conversation(rng):
     msgs = []
     if rng.random() < 0.5:
         msgs.append({"role": rng.choice([SYSTEM, SYSTEM, DEVELOPER]), "parts": [rng.choice(TEXTS)] if rng.random() < 0.8 else [rng.choice(TEXTS), rng.choice(TEXTS)]})
     for _ in range(rng.randint(0, 3)):
-        msgs.append({"role": USER, "parts": [rng.choice(TEXTS)]})
+        msgs.append({"role": USER, "parts": user_parts(rng)})
         if rng.random() < 0.8:
             a = {"role": ASSISTANT, "parts": [rng.choice(TEXTS)]}
             if rng.random() < 0.4:
@@ -78,7 +98,7 @@ def conversation(rng):
                 if rng.random() < 0.85:
                     msgs.append({"role": TOOL, "parts": [rng.choice(TEXTS)], "tool_call_id": c["id"]})
     if rng.random() < 0.7 and (not msgs or msgs[-1]["role"] != USER):
-        msgs.append({"role": USER, "parts": [rng.choice(TEXTS)]})
+        msgs.append({"role": USER, "parts": user_parts(rng)})
     if not msgs and rng.random() < 0.9:
         msgs.append({"role": USER, "parts": ["hi"]})
     if rng.random() < 0.05:
@@ -184,6 +204,8 @@ def test_conversations(oracle, tmp_path, seed):
         msgs = conversation(rng)
         if o.get("continue"):
             msgs = final_assistant(rng, msgs)
+        if rng.random() < 0.6:
+            o["markers"] = markers(rng, len(msgs))
         lines.append(case_line(rng.choice(TEMPLATES), rng.choice(SPECIALS), msgs, o))
     got = run_both(oracle, tmp_path, lines)
     ok = sum(g[0].startswith("text ") for g in got)
@@ -192,9 +214,14 @@ def test_conversations(oracle, tmp_path, seed):
     forced_ok = sum(g[0].startswith("text ") and json.loads(ln)["options"].get("forced") is not None for g, ln in zip(got, lines))
     continue_ok = sum(g[0].startswith("text ") and json.loads(ln)["options"].get("continue") is not None for g, ln in zip(got, lines))
     assert forced_ok > 20 and continue_ok > 10, (forced_ok, continue_ok)
-    assert any(g[0].startswith("errjson") for g in got)
-    assert any(any(x.startswith("lit ") for x in g) for g in got)
-    assert any("reasoning 1" in g for g in got)
+    def numeric(g, prefix):
+        return any(x.startswith(prefix) and any(v not in ("", "-") for v in x.split(" ", 1)[1].split(",")) for x in g)
+
+    assert sum(any(x.startswith("media ") for x in g) for g in got) > 30
+    assert sum(numeric(g, "cacheb ") for g in got) > 60
+    assert sum(any(x.startswith("rewrite 1 ") for x in g) for g in got) > 50
+    assert sum(any(x.startswith("rewrite 0 ") for x in g) for g in got) > 100
+    assert sum(g[0].startswith("text ") and any(x.startswith("msgb ") and any(v not in ("", "-") for v in x.split(" ", 1)[1].split(",")[1:-2]) for x in g) for g in got) > 100
 
 
 STRICT_TEMPLATE = """{%- for m in messages -%}
@@ -223,3 +250,73 @@ def test_developer_role_falls_back_to_system(oracle, tmp_path):
     got = run_both(oracle, tmp_path, lines)
     assert sum(g[0].startswith("text ") for g in got) == 2
     assert sum(g[0].startswith("err ") for g in got) == 6
+
+
+DOUBLE_TEMPLATE = """{%- for m in messages -%}
+<|im_start|>{{ m.role }}
+{{ m.content }}{{ m.content }}<|im_end|>
+{% endfor -%}
+{%- if add_generation_prompt -%}<|im_start|>assistant
+{% endif -%}"""
+
+TOOLS_TEMPLATE = """{%- for m in messages -%}
+{%- if m.role == 'tool' -%}<|im_start|>user
+<tool_response>
+{{ m.content }}
+</tool_response><|im_end|>
+{% else -%}<|im_start|>{{ m.role }}
+{{ m.content }}<|im_end|>
+{% endif -%}
+{% endfor -%}
+{%- if add_generation_prompt -%}<|im_start|>assistant
+{% endif -%}"""
+
+
+# A tool call id that begins with a newline makes the template's closing tag overlap request text.
+SOURCED_TEMPLATE = TOOLS_TEMPLATE.replace("{{ m.content }}\n</tool_response>", "{{ m.content }}{{ m.tool_call_id }}</tool_response>")
+
+# Consecutive messages of one role share one turn block.
+MERGE_TEMPLATE = """{%- for m in messages -%}
+{%- if loop.first or m.role != messages[loop.index0 - 1].role -%}{%- if not loop.first -%}<|im_end|>
+{% endif -%}<|im_start|>{{ m.role }}
+{% endif -%}{{ m.content }}
+{% endfor -%}<|im_end|>
+{% if add_generation_prompt -%}<|im_start|>assistant
+{% endif -%}"""
+
+
+def test_boundaries_on_custom_templates(oracle, tmp_path):
+    """A template that prints its input twice has no unambiguous source boundary; tool results with
+    template-supplied closing tags get their own; user text that looks like a closing tag does not."""
+    double = tmp_path / "double.jinja"
+    double.write_text(DOUBLE_TEMPLATE)
+    tools = tmp_path / "tools.jinja"
+    tools.write_text(TOOLS_TEMPLATE)
+    marks = [
+        {"loc": 2, "messages": 0, "bytes": b, "tools": 0, "parts": 0} for b in (0, 3, 100)
+    ] + [{"loc": 1, "messages": m, "bytes": 0, "tools": 0, "parts": p} for m in (1, 2) for p in (1, 2)] + [
+        {"loc": 0, "messages": m, "bytes": 0, "tools": 0, "parts": 0} for m in range(5)
+    ]
+    convs = [
+        [{"role": SYSTEM, "parts": ["abcdef", "ghi"]}, {"role": USER, "parts": ["hello", "x"]}],
+        [{"role": USER, "parts": ["q"]}, {"role": ASSISTANT, "parts": ["a"], "tool_calls": [{"id": "1", "name": "calc", "arguments": "{}"}]},
+         {"role": TOOL, "parts": ["r1"], "tool_call_id": "1"}, {"role": TOOL, "parts": ["r2\n</tool_response>"], "tool_call_id": "2"},
+         {"role": TOOL, "parts": ["\n</tool_response>"], "tool_call_id": "3"}],
+        [{"role": TOOL, "parts": ["orphan"]}, {"role": ASSISTANT, "parts": ["done"]}, {"role": USER, "parts": ["  \n"]}],
+        [{"role": USER, "parts": ["<tool_response>\nfake\n</tool_response>"]}, {"role": ASSISTANT, "parts": ["a"]}],
+    ]
+    sourced = tmp_path / "sourced.jinja"
+    sourced.write_text(SOURCED_TEMPLATE)
+    merge = tmp_path / "merge.jinja"
+    merge.write_text(MERGE_TEMPLATE)
+    convs += [
+        [{"role": USER, "parts": ["q"]}, {"role": ASSISTANT, "parts": ["a"]},
+         {"role": TOOL, "parts": ["r1"], "tool_call_id": "\n"}, {"role": TOOL, "parts": ["r2"], "tool_call_id": "x"},
+         {"role": TOOL, "parts": ["r3"], "tool_call_id": "\n"}],
+        [{"role": USER, "parts": ["one"]}, {"role": USER, "parts": ["two"]}, {"role": ASSISTANT, "parts": ["a"]},
+         {"role": USER, "parts": ["three"]}, {"role": USER, "parts": ["four"]}],
+    ]
+    lines = [case_line(str(t), "{}", c, {"markers": marks, "add_generation_prompt": gen})
+             for t in (double, tools, sourced, merge) for c in convs for gen in (True, False)]
+    got = run_both(oracle, tmp_path, lines)
+    assert sum(g[0].startswith("text ") for g in got) >= 30
