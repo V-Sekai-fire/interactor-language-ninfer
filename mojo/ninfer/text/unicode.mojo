@@ -45,77 +45,61 @@ struct CodepointSpan(Copyable, Movable):
         self.length = length
 
 
-def _is_cont(b: UInt8) -> Bool:
-    return (b & 0xC0) == 0x80
-
-
 def utf8_codepoint_at(
     text: List[UInt8], offset: Int, context: String
 ) raises -> CodepointSpan:
-    """Decode one code point exactly as `utf8proc_iterate` accepts it."""
+    """Decode one code point. Validation is the standard library's (`String(from_utf8=)`), which
+    rejects what `utf8proc_iterate` rejects: overlong forms, surrogates, values past U+10FFFF
+    and truncated sequences; the parity tests pin that equivalence."""
     if offset >= len(text):
         raise Error("UTF-8 codepoint offset exceeds " + context)
-    var n = len(text) - offset
-    var uc = Int(text[offset])
-    if uc < 0x80:
-        return CodepointSpan(uc, offset, 1)
+    var lead = Int(text[offset])
+    if lead < 0x80:
+        return CodepointSpan(lead, offset, 1)
     var bad = "invalid UTF-8 in " + context + ": " + INVALID_UTF8
-    # Must be between 0xc2 and 0xf4 inclusive to be valid.
-    if uc < 0xC2 or uc > 0xF4:
+    if lead < 0xC2 or lead > 0xF4:
         raise Error(bad)
-    if uc < 0xE0:
-        if n < 2 or not _is_cont(text[offset + 1]):
-            raise Error(bad)
-        return CodepointSpan(((uc & 0x1F) << 6) | (Int(text[offset + 1]) & 0x3F), offset, 2)
-    if uc < 0xF0:
-        if n < 3 or not _is_cont(text[offset + 1]) or not _is_cont(text[offset + 2]):
-            raise Error(bad)
-        if uc == 0xED and text[offset + 1] > 0x9F:
-            raise Error(bad)
-        var v = ((uc & 0xF) << 12) | ((Int(text[offset + 1]) & 0x3F) << 6) | (Int(text[offset + 2]) & 0x3F)
-        if v < 0x800:
-            raise Error(bad)
-        return CodepointSpan(v, offset, 3)
-    if n < 4 or not _is_cont(text[offset + 1]) or not _is_cont(text[offset + 2]) or not _is_cont(text[offset + 3]):
+    var width = 2 if lead < 0xE0 else (3 if lead < 0xF0 else 4)
+    if len(text) - offset < width:
         raise Error(bad)
-    if uc == 0xF0:
-        if text[offset + 1] < 0x90:
-            raise Error(bad)
-    elif uc == 0xF4:
-        if text[offset + 1] > 0x8F:
-            raise Error(bad)
-    var v = ((uc & 7) << 18) | ((Int(text[offset + 1]) & 0x3F) << 12) | ((Int(text[offset + 2]) & 0x3F) << 6) | (Int(text[offset + 3]) & 0x3F)
-    return CodepointSpan(v, offset, 4)
+    var piece = List[UInt8](capacity=width)
+    for i in range(width):
+        piece.append(text[offset + i])
+    try:
+        var s = String(from_utf8=piece)
+        return CodepointSpan(Int(ord(s)), offset, width)
+    except:
+        raise Error(bad)
 
 
 def utf8_codepoints(text: List[UInt8], context: String) raises -> List[CodepointSpan]:
-    var out = List[CodepointSpan]()
+    """Validate the whole buffer with the standard library, then walk its code points."""
+    var out = List[UInt8]()
+    var s: String
+    try:
+        s = String(from_utf8=text)
+    except:
+        # find the offending sequence so the message matches the C++ loader's
+        var offset = 0
+        while offset < len(text):
+            var span = utf8_codepoint_at(text, offset, context)
+            offset += span.length
+        raise Error("invalid UTF-8 in " + context + ": " + INVALID_UTF8)
+    var spans = List[CodepointSpan]()
     var offset = 0
-    while offset < len(text):
-        var span = utf8_codepoint_at(text, offset, context)
-        offset += span.length
-        out.append(span^)
-    return out^
+    for cp in s.codepoints():
+        var width = cp.utf8_byte_length()
+        spans.append(CodepointSpan(Int(cp.to_u32()), offset, width))
+        offset += width
+    return spans^
 
 
 def append_utf8(mut out: List[UInt8], codepoint: Int) raises:
-    """`codepoint_to_utf8`: rejects surrogates and values past U+10FFFF."""
+    """`codepoint_to_utf8`: rejects surrogates and values past U+10FFFF; encoding is `chr`."""
     if codepoint < 0 or codepoint > 0x10FFFF or (codepoint >= 0xD800 and codepoint <= 0xDFFF):
         raise Error("invalid Unicode codepoint")
-    if codepoint < 0x80:
-        out.append(UInt8(codepoint))
-    elif codepoint < 0x800:
-        out.append(UInt8(0xC0 | (codepoint >> 6)))
-        out.append(UInt8(0x80 | (codepoint & 0x3F)))
-    elif codepoint < 0x10000:
-        out.append(UInt8(0xE0 | (codepoint >> 12)))
-        out.append(UInt8(0x80 | ((codepoint >> 6) & 0x3F)))
-        out.append(UInt8(0x80 | (codepoint & 0x3F)))
-    else:
-        out.append(UInt8(0xF0 | (codepoint >> 18)))
-        out.append(UInt8(0x80 | ((codepoint >> 12) & 0x3F)))
-        out.append(UInt8(0x80 | ((codepoint >> 6) & 0x3F)))
-        out.append(UInt8(0x80 | (codepoint & 0x3F)))
+    for b in chr(codepoint).as_bytes():
+        out.append(b)
 
 
 def codepoint_to_utf8(codepoint: Int) raises -> List[UInt8]:

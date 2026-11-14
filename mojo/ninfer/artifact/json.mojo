@@ -384,20 +384,8 @@ def _valid_utf8(b: List[UInt8]) -> Bool:
 
 
 def _append_utf8(mut out: List[UInt8], cp: Int):
-    if cp < 0x80:
-        out.append(UInt8(cp))
-    elif cp < 0x800:
-        out.append(UInt8(0xC0 | (cp >> 6)))
-        out.append(UInt8(0x80 | (cp & 0x3F)))
-    elif cp < 0x10000:
-        out.append(UInt8(0xE0 | (cp >> 12)))
-        out.append(UInt8(0x80 | ((cp >> 6) & 0x3F)))
-        out.append(UInt8(0x80 | (cp & 0x3F)))
-    else:
-        out.append(UInt8(0xF0 | (cp >> 18)))
-        out.append(UInt8(0x80 | ((cp >> 12) & 0x3F)))
-        out.append(UInt8(0x80 | ((cp >> 6) & 0x3F)))
-        out.append(UInt8(0x80 | (cp & 0x3F)))
+    for b in chr(cp).as_bytes():
+        out.append(b)
 
 
 def parse_json(
