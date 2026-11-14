@@ -12,6 +12,7 @@ not decorate. A `K_ERROR` is an ordinary `std::exception` and gets decorated by 
 """
 
 from ninfer.text.jinja.error import JinjaError, codepoints, jinja_error, parse_int, K_NOTIMPL
+from ninfer.text.jinja.grisu import dump_double
 from std.collections import Dict, List, Optional
 
 from ninfer.text.jinja.jstring import (
@@ -292,56 +293,8 @@ def equivalent(h: Heap, a: Int, b: Int) -> Bool:
 
 
 def format_float(f: Float64) raises JinjaError -> String:
-    """nlohmann::json(double).dump(): shortest round-trip digits, its own layout rules."""
-    if f == 0.0:
-        # sign of zero
-        var negative = String(f).startswith("-")
-        return "-0.0" if negative else "0.0"
-    var text = String(f)
-    var negative = text.startswith("-")
-    if negative:
-        var t2 = String(text[byte=1:])
-        text = t2^
-    # split mantissa / exponent
-    var exp10 = 0
-    var mantissa = text
-    var epos = text.find("e")
-    if epos >= 0:
-        mantissa = String(text[byte=0:epos])
-        exp10 = parse_int(String(text[byte = epos + 1 :]))
-    var digits = String()
-    var point = mantissa.find(".")
-    var int_part = mantissa if point < 0 else String(mantissa[byte=0:point])
-    var frac_part = String() if point < 0 else String(mantissa[byte = point + 1 :])
-    digits = int_part + frac_part
-    var n = int_part.byte_length() + exp10  # decimal point position relative to the digits
-    var lead = 0
-    var end = digits.byte_length()
-    while lead < end - 1 and digits.as_bytes()[lead] == 0x30:
-        lead += 1
-        n -= 1
-    while end - lead > 1 and digits.as_bytes()[end - 1] == 0x30:
-        end -= 1
-    var d2 = String(digits[byte=lead:end])
-    digits = d2^
-    var k = digits.byte_length()
-    var out = String()
-    if k <= n and n <= 15:
-        out = digits + "0" * (n - k) + ".0"
-    elif 0 < n and n <= 15:
-        out = String(digits[byte=0:n]) + "." + String(digits[byte=n:])
-    elif -4 < n and n <= 0:
-        out = "0." + "0" * (-n) + digits
-    else:
-        var e = n - 1
-        out = String(digits[byte=0:1])
-        if k > 1:
-            out += "." + String(digits[byte=1:])
-        out += "e"
-        out += "-" if e < 0 else "+"
-        var ae = -e if e < 0 else e
-        out += ("0" + String(ae)) if ae < 10 else String(ae)
-    return ("-" + out) if negative else out
+    """nlohmann::json(double).dump(): Grisu2 digits and its layout rules (see grisu.mojo)."""
+    return dump_double(f)
 
 
 def float_to_string(f: Float64) raises JinjaError -> String:
