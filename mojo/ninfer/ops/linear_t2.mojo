@@ -23,7 +23,7 @@ writes into a column range of a wider output (`out_ld`, `out_offset`: the split 
 GDN and attention wrappers), optionally adding into what is there (`accumulate`: `linear_add`).
 `t2_linear_swiglu` projects the gate/up plane and applies SwiGLU as the engine's separate pass.
 
-One warp computes one output element, the plain schedule rather than the engine's tuned decode,
+One warp computes one output element for one token (four tokens when t > 1, sharing each decoded weight), the plain schedule rather than the engine's tuned decode,
 small-T and prefill variants. Kernel scalars are `Int32`: `Int` is not device passable.
 """
 
@@ -107,6 +107,52 @@ def t2_linear_kernel(
         dst[unsafe_offset=at] = total.cast[DType.bfloat16]()
 
 
+comptime T2_TOKENS_PER_WARP = 4
+
+
+def t2_linear_wide_kernel(
+    qdata: ImmPointer[UInt8, ImmUntrackedOrigin],
+    scales: ImmPointer[Float16, ImmUntrackedOrigin],
+    act: ImmPointer[BFloat16, ImmUntrackedOrigin],
+    dst: MutPointer[BFloat16, MutUntrackedOrigin],
+    k: Int32,
+    groups: Int32,
+    tokens: Int32,
+    row_begin: Int32,
+    out_ld: Int32,
+    out_offset: Int32,
+    accumulate: Int32,
+):
+    """Four tokens per warp: each weight byte and scale is read and decoded once for all four. Every
+    token's arithmetic is the one of `t2_linear_kernel`, in the same order, so the results are
+    identical bit for bit."""
+    var local = Int(block_idx.x)
+    var row = Int(row_begin) + local
+    var t0 = Int(block_idx.y) * T2_TOKENS_PER_WARP
+    var lane = Int(lane_id())
+    var logical_k = Int(k)
+    var acc = SIMD[DType.float32, 4](0)
+    for g in range(Int(groups)):
+        var byte = qdata[unsafe_offset=(row * Int(groups) + g) * T2_CODE_BYTES_PER_GROUP + lane]
+        var base = g * T2_GROUP_K + lane * 4
+        var scale = scales[unsafe_offset=row * Int(groups) + g].cast[DType.float32]()
+        var partial = SIMD[DType.float32, 4](0)
+        for j in range(4):
+            if base + j < logical_k:
+                var w = Float32(_decode(Int((byte >> UInt8(2 * j)) & 3)))
+                for u in range(T2_TOKENS_PER_WARP):
+                    if t0 + u < Int(tokens):
+                        partial[u] += w * act[unsafe_offset=(t0 + u) * logical_k + base + j].cast[DType.float32]()
+        acc += partial * scale
+    for u in range(T2_TOKENS_PER_WARP):
+        var total = _butterfly_sum(acc[u])
+        if lane == 0 and t0 + u < Int(tokens):
+            var at = (t0 + u) * Int(out_ld) + Int(out_offset) + local
+            if accumulate != 0:
+                total += dst[unsafe_offset=at].cast[DType.float32]()
+            dst[unsafe_offset=at] = total.cast[DType.bfloat16]()
+
+
 def t2_linear(
     ctx: DeviceContext,
     qdata: DeviceBuffer[DType.uint8],
@@ -123,6 +169,23 @@ def t2_linear(
 ) raises:
     """`dst[t, out_offset + r] (+)= act[t, :k] . W[row_begin + r, :k]` for r in [0, rows). The planes
     hold `ceildiv(k, 128)` groups per row."""
+    if t > 1:
+        ctx.enqueue_function[t2_linear_wide_kernel](
+            qdata,
+            scales,
+            act,
+            dst,
+            Int32(k),
+            Int32(ceildiv(k, T2_GROUP_K)),
+            Int32(t),
+            Int32(row_begin),
+            Int32(out_ld),
+            Int32(out_offset),
+            Int32(1 if accumulate else 0),
+            grid_dim=(rows, ceildiv(t, T2_TOKENS_PER_WARP)),
+            block_dim=32,
+        )
+        return
     ctx.enqueue_function[t2_linear_kernel](
         qdata,
         scales,
