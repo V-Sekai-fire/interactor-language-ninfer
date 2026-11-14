@@ -358,9 +358,8 @@ def _bpe_merge(
     # push_candidate(left)
     for left in range(n - 1):
         var key = _merge_pair_key(symbols[left], symbols[left + 1])
-        var rule = merges.get(key)
-        if rule:
-            heap.push(rule.value() >> 32, left, left + 1, rule.value() & 0xFFFFFFFF, gen[left], gen[left + 1])
+        if case .Some(rule) = merges.get(key):
+            heap.push(rule >> 32, left, left + 1, rule & 0xFFFFFFFF, gen[left], gen[left + 1])
     var cand = List[Int]()
     while not heap.empty():
         heap.pop_into(cand)
@@ -384,9 +383,8 @@ def _bpe_merge(
             var b = next[a]
             if b < 0:
                 continue
-            var rule = merges.get(_merge_pair_key(symbols[a], symbols[b]))
-            if rule:
-                heap.push(rule.value() >> 32, a, b, rule.value() & 0xFFFFFFFF, gen[a], gen[b])
+            if case .Some(rule) = merges.get(_merge_pair_key(symbols[a], symbols[b])):
+                heap.push(rule >> 32, a, b, rule & 0xFFFFFFFF, gen[a], gen[b])
     var node = 0
     while node >= 0:
         out_symbols.append(symbols[node])
@@ -743,9 +741,8 @@ struct Tokenizer(Movable):
             else:
                 for b in range(begin, end):
                     piece.append(text[b])
-            var found = self.vocab_token_to_id.get(String(unsafe_from_utf8=piece))
-            if found:
-                symbols.append(found.value())
+            if case .Some(symbol) = self.vocab_token_to_id.get(String(unsafe_from_utf8=piece)):
+                symbols.append(symbol)
                 ends.append(end)
             else:
                 for b in range(begin, end):
@@ -1252,9 +1249,8 @@ def _merge_added_tokens_decoder(
         decoder_ids[id] = True
         var token = _parse_added_token_decoder_entry(doc, id, doc.at(decoder, i), label)
         _validate_supported_added_token(token, label)
-        var existing = by_id.get(id)
-        if existing:
-            if not _same_added_token(tokens[existing.value()], token):
+        if case .Some(existing) = by_id.get(id):
+            if not _same_added_token(tokens[existing], token):
                 raise Error(
                     "conflicting added-token definition for id " + String(id)
                     + " between tokenizer.json and tokenizer_config.json"
@@ -1378,13 +1374,13 @@ def _decode_byte_level_token(
     var spans = utf8_codepoints(_bytes_of(token), "Tokenizer::decode token id " + String(id))
     var out = List[UInt8](capacity=len(spans))
     for span in spans:
-        var found = decoder.get(span.value)
-        if not found:
+        if case .Some(byte) = decoder.get(span.value):
+            out.append(UInt8(byte))
+        else:
             raise Error(
                 "Tokenizer::decode token id " + String(id)
                 + " contains a character outside the byte-level alphabet"
             )
-        out.append(UInt8(found.value()))
     return out^
 
 
@@ -1392,8 +1388,7 @@ def _load_byte_token_ids(token_to_id: Dict[String, Int]) raises -> List[Int]:
     var encoder = _byte_level_encoder()
     var ids = List[Int]()
     for byte in range(256):
-        var found = token_to_id.get(encoder[byte])
-        ids.append(found.value() if found else -1)
+        ids.append(token_to_id.get(encoder[byte]).or_else(-1))
     return ids^
 
 
@@ -1402,8 +1397,7 @@ def _load_byte_fallback_ids(token_to_id: Dict[String, Int]) -> List[Int]:
     var digits = "0123456789ABCDEF"
     for byte in range(256):
         var name = "<0x" + digits[byte = byte >> 4 : (byte >> 4) + 1] + digits[byte = byte & 15 : (byte & 15) + 1] + ">"
-        var found = token_to_id.get(name)
-        ids.append(found.value() if found else -1)
+        ids.append(token_to_id.get(name).or_else(-1))
     return ids^
 
 
