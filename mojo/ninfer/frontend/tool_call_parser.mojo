@@ -38,6 +38,10 @@ comptime R_UNDECLARED_TOOL = 4
 comptime R_TRAILING_CONTENT = 5
 
 
+# `Json::parse` has no depth bound; the recursive reader is given far more than a tool definition needs.
+comptime TOOL_JSON_MAX_DEPTH = 20000
+
+
 def fallback_reason_name(reason: Int) -> String:
     if reason == R_NONE:
         return "none"
@@ -621,7 +625,7 @@ def build_tool_call_output_contract(
     for tool_json in tool_jsons:
         var doc = Json()
         try:
-            var root = parse_json(_bytes_of(tool_json), "tool definition", doc, False)
+            var root = parse_json(_bytes_of(tool_json), "tool definition", doc, False, TOOL_JSON_MAX_DEPTH)
             _append_tool_contract(contract, doc, root)
         except:
             pass  # Json::parse(..., allow_exceptions=false) discards what it cannot parse

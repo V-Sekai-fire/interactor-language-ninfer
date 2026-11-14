@@ -243,3 +243,15 @@ def test_deeply_nested_values(oracle, tmp_path):
     lines = [case("parse", CONTRACTS["typed"], "", 64, [hx(t)]) for t in texts]
     got = run_both(oracle, tmp_path, lines)
     assert sum(x.startswith("parse resp=1") for x in got) == len(texts)
+
+
+def test_deeply_nested_tool_definitions(oracle, tmp_path):
+    """`Json::parse` has no depth limit, so a tool whose schema nests past 512 levels is still a tool."""
+    lines = []
+    for depth in (100, 511, 513, 2000, 15000):
+        nested = '{"a":' * depth + "{}" + "}" * depth
+        text = tool("deep", {"x": {"type": "string"}}).replace('"type": "string"', '"type": "string", "extra": ' + nested)
+        lines.append(case("parse", [text], "", 64, [hx(CALL("deep", [("x", "v")]).encode())]))
+        lines.append(case("parse", [text, CALC], "", 64, [hx(CALL("calc", [("expression", "1")]).encode())]))
+    got = run_both(oracle, tmp_path, lines)
+    assert all(x.startswith("parse resp=1") for x in got), got[:2]
