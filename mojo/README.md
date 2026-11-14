@@ -25,8 +25,10 @@ Rules for the split:
 | 1 | Artifact reader: framing, directory, shards, exact range reads | `src/artifact/{framing,schema,reader}` | #7 |
 | 2 | Formats, layouts, tensor geometry, binder | `src/artifact/{formats,layouts,binder}`, `src/core/weight*` | #8 (Host side; device placement waits for step 4) |
 | 3 | Unicode: UTF-8, categories, NFC | `src/text/unicode.*` | #9 |
-| 3b | BPE tokenizer | `src/models/qwen3_5/frontend/tokenizer.*` | this PR |
-| 3c | Chat template (Jinja) and tool-call parser | `src/text/jinja.*`, `frontend/chat_template.*`, `tool_call_parser.*` | |
+| 3b | BPE tokenizer | `src/models/qwen3_5/frontend/tokenizer.*` | #10 |
+| 3c | Jinja lexer | `third_party/llama-jinja/jinja/lexer.*` | this PR |
+| 3d | Jinja parser, values, runtime, filters; `JinjaTemplate` with provenance | `llama-jinja/jinja/*`, `src/text/jinja.*` | |
+| 3e | Chat template builder and tool-call parser | `frontend/chat_template.*`, `tool_call_parser.*` | |
 | 4 | Materializer and host transcode | `src/artifact/{materializer,transcode}` | |
 | 5 | Ternary and groupwise-int matmul kernels (Mojo GPU) | `src/ops` | |
 | 6 | Gated DeltaNet layer, RV32IM in-weights computer | `src/ops`, `src/models/qwen3_5` | |
@@ -40,6 +42,7 @@ reference in `tools/artifact`).
 
 ```
 mojo/ninfer/core/       weight.mojo (QType, QuantLayout, WeightGeometry)
+mojo/ninfer/text/jinja/ error.mojo (JinjaError), lexer.mojo
 mojo/ninfer/text/       unicode.mojo, unicode_tables.mojo (generated from utf8proc), tokenizer.mojo
 mojo/ninfer/artifact/   json framing schema reader formats layouts binder
 mojo/tests/             dump_artifact.mojo  geometry_probe.mojo
@@ -55,4 +58,4 @@ pixi run --manifest-path mojo/pixi.toml test
 
 The tests write artifacts with the production writer (`tools/artifact`), single-file and
 sharded, read them with the Mojo reader, and compare against the Python reference reader and
-against the C++ validation messages. Pinned to the 1.3 nightly 1.3.0.dev2026111316, which the `if case` unwrapping needs; verified there.
+against the C++ validation messages. Pinned to the 1.3 nightly 1.3.0.dev2026111316, which the `if case` unwrapping needs; verified there. EmberJson is not a dependency: its packages are built for Mojo 1.1.0 and its source does not compile on 1.3 yet, and nothing here imports it (`artifact/json.mojo` is the JSON reader).
