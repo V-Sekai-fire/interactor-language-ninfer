@@ -21,7 +21,7 @@ CXX = shutil.which("c++") or shutil.which("clang++") or shutil.which("g++")
 pytestmark = pytest.mark.skipif(MOJO is None or CXX is None, reason="needs mojo and a C++ compiler")
 
 
-def build_jinja_oracle(work: Path, source: Path, name: str) -> Path:
+def build_jinja_oracle(work: Path, source: Path, name: str, extra=()) -> Path:
     cc = shutil.which("cc") or shutil.which("clang") or shutil.which("gcc")
     obj = work / "utf8proc.o"
     if not obj.exists():
@@ -32,7 +32,7 @@ def build_jinja_oracle(work: Path, source: Path, name: str) -> Path:
         [CXX, "-std=c++20", "-O1", f"-I{ROOT / 'src'}", f"-I{ROOT / 'third_party/llama-jinja'}",
          f"-I{ROOT / 'third_party'}", f"-I{ROOT / 'third_party/utf8proc'}", str(source),
          *map(str, sorted((ROOT / "third_party/llama-jinja/jinja").glob("*.cpp"))),
-         str(ROOT / "src/text/unicode.cpp"), str(obj), "-o", str(exe)],
+         str(ROOT / "src/text/unicode.cpp"), *map(str, extra), str(obj), "-o", str(exe)],
         check=True,
     )
     return exe

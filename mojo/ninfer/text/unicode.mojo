@@ -74,7 +74,6 @@ def utf8_codepoint_at(
 
 def utf8_codepoints(text: List[UInt8], context: String) raises -> List[CodepointSpan]:
     """Validate the whole buffer with the standard library, then walk its code points."""
-    var out = List[UInt8]()
     var s: String
     try:
         s = String(from_utf8=text)
