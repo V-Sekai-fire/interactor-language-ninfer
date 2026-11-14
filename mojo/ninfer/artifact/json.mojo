@@ -103,11 +103,13 @@ struct _Parser(Movable):
     var text: List[UInt8]
     var pos: Int
     var label: String
+    var strict_keys: Bool  # False: a repeated member replaces the earlier one (nlohmann)
 
-    def __init__(out self, var text: List[UInt8], label: String):
+    def __init__(out self, var text: List[UInt8], label: String, strict_keys: Bool):
         self.text = text^
         self.pos = 0
         self.label = label
+        self.strict_keys = strict_keys
 
     def fail(self, what: String) -> Error:
         return Error(self.label + ": " + what + " at byte " + String(self.pos))
@@ -200,6 +202,8 @@ struct _Parser(Movable):
                 _append_utf8(out, cp)
             else:
                 raise self.fail("invalid escape")
+        if not _valid_utf8(out):
+            raise self.fail("invalid UTF-8 in string")
         return String(unsafe_from_utf8=out)
 
     def parse_number(mut self, mut doc: Json) raises -> Int:
@@ -267,7 +271,7 @@ struct _Parser(Movable):
         if c == 0x7B:  # {
             self.pos += 1
             var node = JsonNode(OBJECT)
-            var seen = Dict[String, Bool]()
+            var seen = Dict[String, Int]()
             self.skip_ws()
             if self.pos < len(self.text) and self.text[self.pos] == 0x7D:
                 self.pos += 1
@@ -277,16 +281,23 @@ struct _Parser(Movable):
                 if self.pos >= len(self.text) or self.text[self.pos] != 0x22:
                     raise self.fail("expected object key")
                 var key = self.parse_string()
+                var replace_at = -1
                 if key in seen:
-                    raise Error(self.label + ": duplicate JSON member " + key)
-                seen[key] = True
+                    if self.strict_keys:
+                        raise Error(self.label + ": duplicate JSON member " + key)
+                    replace_at = seen[key]
+                else:
+                    seen[key] = len(node.keys)
                 self.skip_ws()
                 if self.pos >= len(self.text) or self.text[self.pos] != 0x3A:
                     raise self.fail("expected ':'")
                 self.pos += 1
                 var child = self.parse_value(doc, depth + 1)
-                node.keys.append(key^)
-                node.items.append(child)
+                if replace_at >= 0:
+                    node.items[replace_at] = child
+                else:
+                    node.keys.append(key^)
+                    node.items.append(child)
                 self.skip_ws()
                 if self.pos >= len(self.text):
                     raise self.fail("unterminated object")
@@ -339,6 +350,39 @@ struct _Parser(Movable):
         raise self.fail("unexpected character")
 
 
+def _valid_utf8(b: List[UInt8]) -> Bool:
+    """The rules of `utf8proc_iterate`, which nlohmann applies to every string."""
+    var i = 0
+    var n = len(b)
+    while i < n:
+        var c = Int(b[i])
+        if c < 0x80:
+            i += 1
+        elif c < 0xC2 or c > 0xF4:
+            return False
+        elif c < 0xE0:
+            if i + 1 >= n or (b[i + 1] & 0xC0) != 0x80:
+                return False
+            i += 2
+        elif c < 0xF0:
+            if i + 2 >= n or (b[i + 1] & 0xC0) != 0x80 or (b[i + 2] & 0xC0) != 0x80:
+                return False
+            if c == 0xE0 and b[i + 1] < 0xA0:
+                return False
+            if c == 0xED and b[i + 1] > 0x9F:
+                return False
+            i += 3
+        else:
+            if i + 3 >= n or (b[i + 1] & 0xC0) != 0x80 or (b[i + 2] & 0xC0) != 0x80 or (b[i + 3] & 0xC0) != 0x80:
+                return False
+            if c == 0xF0 and b[i + 1] < 0x90:
+                return False
+            if c == 0xF4 and b[i + 1] > 0x8F:
+                return False
+            i += 4
+    return True
+
+
 def _append_utf8(mut out: List[UInt8], cp: Int):
     if cp < 0x80:
         out.append(UInt8(cp))
@@ -356,9 +400,14 @@ def _append_utf8(mut out: List[UInt8], cp: Int):
         out.append(UInt8(0x80 | (cp & 0x3F)))
 
 
-def parse_json(var text: List[UInt8], label: String, mut doc: Json) raises -> Int:
-    """Parse `text` into `doc` and return the root node index."""
-    var p = _Parser(text^, label)
+def parse_json(
+    var text: List[UInt8], label: String, mut doc: Json, strict_keys: Bool = True
+) raises -> Int:
+    """Parse `text` into `doc` and return the root node index.
+
+    `strict_keys=False` keeps the last of a repeated member, as nlohmann does for
+    `Json::parse` (the artifact directory is the strict case)."""
+    var p = _Parser(text^, label, strict_keys)
     var root = p.parse_value(doc, 0)
     p.skip_ws()
     if p.pos != len(p.text):
