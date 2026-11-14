@@ -11,7 +11,7 @@ Text is `List[UInt8]` throughout: decoded tokens are arbitrary bytes, not always
 from std.collections import Dict, List, Optional
 
 from ninfer.artifact.json import Json, parse_json, NULL, BOOL, UINT, NEG, FLOAT, STRING, ARRAY, OBJECT
-from ninfer.parsec.parsec import Parsec
+from ninfer.combinator.combinator import Parser
 from ninfer.text.qwen_split import build_qwen_split, qwen_word_end
 from ninfer.text.unicode import (
     Unicode,
@@ -399,7 +399,7 @@ def _bpe_merge(
 
 struct Tokenizer(Movable):
     var unicode: Unicode
-    var split: Parsec  # the Qwen pre-tokenizer, as parser combinators
+    var split: Parser  # the Qwen pre-tokenizer, as parser combinators
     var sentencepiece: Bool
     var decoded_token_bytes: List[List[UInt8]]
     var valid_token_ids: List[Bool]

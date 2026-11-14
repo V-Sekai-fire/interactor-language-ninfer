@@ -18,13 +18,13 @@ that matters is written as the match the backing-off produces:
 
 from std.collections import List
 
-from ninfer.parsec.parsec import Parsec, U_LETTER, U_MARK, U_NUMBER, U_SPACE, U_NEWLINE
+from ninfer.combinator.combinator import Parser, U_LETTER, U_MARK, U_NUMBER, U_SPACE, U_NEWLINE
 from ninfer.text.unicode import Unicode, utf8_codepoint_at
 
 comptime _NAME = "qwen_split"
 
 
-def _ci_char(mut p: Parsec, ch: Int) -> Int:
+def _ci_char(mut p: Parser, ch: Int) -> Int:
     var ranges = List[Int]()
     ranges.append(ch)
     ranges.append(ch)
@@ -33,23 +33,23 @@ def _ci_char(mut p: Parsec, ch: Int) -> Int:
     return p.ascii_char(ranges)
 
 
-def _ci_word(mut p: Parsec, word: String) -> Int:
+def _ci_word(mut p: Parser, word: String) -> Int:
     var out = p.empty()
     for b in word.as_bytes():
         out = p.concat(out, _ci_char(p, Int(b)))
     return out
 
 
-def _one_or_more(mut p: Parsec, c: Int) -> Int:
+def _one_or_more(mut p: Parser, c: Int) -> Int:
     return p.concat(c, p.repeat(c))
 
 
-def _alts(mut p: Parsec, parts: List[Int]) -> Int:
+def _alts(mut p: Parser, parts: List[Int]) -> Int:
     return p.choice(parts)
 
 
-def build_qwen_split() -> Parsec:
-    var p = Parsec()
+def build_qwen_split() -> Parser:
+    var p = Parser()
     var space = p.uclass(U_SPACE)
     var newline = p.uclass(U_NEWLINE)
     var letter_mark = p.uclass(U_LETTER | U_MARK)
@@ -94,7 +94,7 @@ def build_qwen_split() -> Parsec:
 
 
 def qwen_word_end(
-    split: Parsec, text: List[UInt8], begin: Int, unicode: Unicode, context: String
+    split: Parser, text: List[UInt8], begin: Int, unicode: Unicode, context: String
 ) raises -> Int:
     """End of the piece that starts at `begin`; a character no alternative takes is a piece alone."""
     var end = split.scan(_NAME, text, begin, unicode, context)

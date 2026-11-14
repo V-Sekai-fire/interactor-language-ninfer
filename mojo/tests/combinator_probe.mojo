@@ -1,4 +1,4 @@
-"""Run NimbleParsec-style specs. Each input line is JSON: {"defs": {name: spec}, "main": spec, "inputs": [...]}.
+"""Run combinator specs (the vocabulary of NimbleParsec). Each input line is JSON: {"defs": {name: spec}, "main": spec, "inputs": [...]}.
 Output per case: `case N`, then one line per input:
   ok TERMS rest=HEX line=L,O off=N   or   err REASONHEX rest=HEX line=L,O off=N"""
 
@@ -6,7 +6,7 @@ from std.pathlib import Path
 from std.sys import argv
 
 from ninfer.artifact.json import Json, parse_json, NULL, UINT, NEG, STRING
-from ninfer.parsec.parsec import Parsec
+from ninfer.combinator.combinator import Parser
 from ninfer.text.jinja.jstring import string_bytes
 
 
@@ -40,7 +40,7 @@ def _opt_int(doc: Json, n: Int, key: String, default: Int) -> Int:
     return _int(doc, k)
 
 
-def build(mut p: Parsec, doc: Json, n: Int) raises -> Int:
+def build(mut p: Parser, doc: Json, n: Int) raises -> Int:
     var op = doc.string(doc.get(n, "op"))
     if op == "empty":
         return p.empty()
@@ -119,7 +119,7 @@ def build(mut p: Parsec, doc: Json, n: Int) raises -> Int:
     if op == "post_count":
         return p.post_count(c)
     if op == "parsec":
-        return p.parsec(doc.string(doc.get(n, "name")))
+        return p.call(doc.string(doc.get(n, "name")))
     raise Error("unknown op " + op)
 
 
@@ -133,7 +133,7 @@ def main() raises:
         n += 1
         var doc = Json()
         var root = parse_json(string_bytes(String(line)), "case", doc, False)
-        var p = Parsec()
+        var p = Parser()
         var defs = doc.get(root, "defs")
         for i in range(doc.size(defs)):
             p.define(doc.key(defs, i), build(p, doc, doc.at(defs, i)))
