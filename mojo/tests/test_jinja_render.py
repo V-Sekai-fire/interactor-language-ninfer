@@ -25,7 +25,7 @@ CONTEXT = {
     "s": "Hello World", "e": "", "u": "h\u00e9llo \u0391\u03a3 stra\u00dfe", "n": 42, "neg": -7, "f": 3.5, "b": True, "nul": None,
     "l": [3, 1, 2], "ls": ["b", "a", "c"], "d": {"x": 1, "y": "two", "z": [1, 2]},
     "objs": [{"k": "a", "v": 1}, {"k": "b", "v": 2}, {"k": "c", "v": 3}], "nested": [[1, 2], [3, 4]],
-    "words": "a b  c d", "padded": "  xx  ", "multi": "l1\nl2\n\nl4", "big": 9007199254740993, "fl": [1.0, 2.5, 1e20, 1e-7, 0.1],
+    "words": "a b  c d", "many": [{"k": (i * 7) % 5, "i": i} for i in range(60)], "manyd": {f"k{i:02d}": (i * 3) % 4 for i in range(40)}, "manyl": [(i * 11) % 6 for i in range(50)], "padded": "  xx  ", "multi": "l1\nl2\n\nl4", "big": 9007199254740993, "fl": [1.0, 2.5, 1e20, 1e-7, 0.1],
 }
 EXPRS = r"""
 s|s|upper|s|lower|s|title|s|capitalize|u|upper|u|lower|u|title|u|capitalize|s|length|u|length|s|trim|padded|strip
@@ -53,6 +53,20 @@ l|map(1)|l|map('upper')|ls|map('upper')|l|first|first|s|x|l|sort(attribute='q')|
 s.upper()|s.split()|s.lower().upper()|s|upper|lower|(s|upper)|length|"a" "b"|'it''s'|'\n'|'a\tb'|'q\'q'|'\u00e9'|'\\'
 macro_missing()|s()|d.x()|n.x|s.x|l.x|nul.x|b.x|f.x|l['x']|d[1]|d[nul]|d[[1]]|d[l]|s[1.5]|s[nul]|1.5|007|1e3|.5
 """
+FLOAT_STRINGS = ["0.1", "1e22", "1e23", "123456789012345678901234567890", "9007199254740993", "1.7976931348623157e308", "1.7976931348623159e308", "1e309", "-1e309",
+                 "2.2250738585072014e-308", "2.2250738585072011e-308", "4.9e-324", "5e-324", "1e-400", "0e-400", "0.000", "-0.0", "1e-310", "  12.5xyz", "\t3", "+7.25", "-.5", "5.", ".", "e5", "1e", "1e+", "1e5e5",
+                 "inf", "-Infinity", "INF", "infinit", "nan", "NaN(abc)", "nan(", "0x10", "0x1p4", "0x1.8p1", "0X.8", "0x", "0xg", "0x1p", "0x1p-1074", "0x1p-1075", "0x1.8p-1074", "0x1p1024", "0x1.fffffffffffffp1023",
+                 "0x123456789abcdef01", "0x0.0000000000000000001p70", "1_000", "12e3", "00012", "1,5", "", " ", "abc", "1e-5", "6.02214076e23", "3.141592653589793238462643383279", "2.718281828459045e0", "100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000e-80"]
+FLOAT_CASES = ["{{ " + json.dumps(f) + "|float }}" for f in FLOAT_STRINGS] + ["{{ " + json.dumps(f) + "|float(default=-1) }}" for f in FLOAT_STRINGS]
+STRFTIME = ["{{ strftime_now('%Y-%m-%d %H:%M:%S') }}", "{{ strftime_now('%A %a %B %b %j %U %w %y %e %p %I') }}", "{{ strftime_now('%%') }}", "{{ strftime_now('') }}", "{{ strftime_now('plain') }}",
+            "{{ strftime_now('%Z %z') }}", "{{ strftime_now('%s') }}", "{{ strftime_now('%c') }}", "{{ strftime_now('%x %X') }}", "{{ strftime_now(1) }}", "{{ strftime_now() }}", "{{ strftime_now('%Q') }}",
+            "{% set d = strftime_now('%d %B %Y') %}[{{ d }}]", "{{ strftime_now('%H') ~ strftime_now('%M') }}"]
+SORT_TIES = [
+    "{{ many|sort(attribute='k')|map(attribute='i')|join(',') }}", "{{ many|sort(attribute='k',reverse=true)|map(attribute='i')|join(',') }}",
+    "{{ (manyd|dictsort(by='value')).keys()|join(',') }}", "{{ (manyd|dictsort(by='value',reverse=true)).keys()|join(',') }}",
+    "{{ (manyd|dictsort).keys()|join(',') }}", "{{ manyl|sort|join(',') }}", "{{ manyl|sort(reverse=true)|join(',') }}",
+    "{{ many|sort(attribute='k')|first }}", "{{ many|sort(attribute='nope') }}", "{{ many|sort }}",
+]
 STATEMENTS = [
     "{% set x = 5 %}{{ x }}", "{% set a, b = [1,2] %}{{ a }}{{ b }}", "{% set a, b = [1] %}", "{% set a, b = 3 %}", "{% set ns = namespace(c=0) %}{% for i in l %}{% set ns.c = ns.c + i %}{% endfor %}{{ ns.c }}",
     "{% set x %}captured {{ n }}{% endset %}[{{ x }}]", "{% for i in l %}{{ i }},{% endfor %}", "{% for i in l %}{{ loop.index }}/{{ loop.length }}{{ loop.first }}{{ loop.last }}{{ loop.revindex }}{{ loop.previtem }}{{ loop.nextitem }};{% endfor %}",
@@ -160,6 +174,40 @@ def test_expressions(oracle, tmp_path):
 FILTERS = set("""upper lower title capitalize length trim strip lstrip rstrip replace split rsplit startswith endswith format int float abs string
 first last sort reverse min max list join map selectattr rejectattr select reject keys values items get dictsort tojson slice indent safe append pop
 unique default count d e""".split())
+
+
+def test_float_printing_follows_grisu2(oracle, tmp_path):
+    import random, struct
+    rng = random.Random(20261114)
+    values = []
+    for _ in range(1500):
+        bits = rng.getrandbits(64)
+        v = struct.unpack("<d", struct.pack("<Q", bits))[0]
+        if v == v and abs(v) != float("inf"):
+            values.append(v)
+    values += [rng.uniform(-1, 1) * 10 ** rng.randint(-25, 25) for _ in range(800)]
+    values += [10.0 ** e for e in range(-30, 31)] + [float(10 ** e) for e in range(0, 23)] + [1e23, 9.5e22, 5e-324, 2.2250738585072014e-308, 0.1 + 0.2, 1 / 3, 2 / 3, 123456789012345.0, 1234567890123456.0]
+    lines = [case_line("{{ " + json.dumps(repr(v)) + "|float }}") for v in values]
+    got = check(oracle, tmp_path, lines)
+    assert sum(x.startswith("text") for x in got) > 2000
+
+
+def test_float_filter_follows_strtod(oracle, tmp_path):
+    got = check(oracle, tmp_path, [case_line(t) for t in FLOAT_CASES])
+    assert sum(x.startswith("text") for x in got) > 60
+
+
+def test_strftime_now(oracle, tmp_path):
+    lines = [case_line(t).replace('"timestamp": 1700000000', f'"timestamp": {ts}') for t in STRFTIME for ts in (1700000000, 0, 1893456000)]
+    got = check(oracle, tmp_path, lines, min_errors=3)
+    assert sum(x.startswith("text") for x in got) > 20
+
+
+def test_sort_ties_follow_libstdcxx(oracle, tmp_path):
+    if "g++" not in Path(CXX).name:
+        pytest.skip("tie order past 16 elements is only comparable with a libstdc++ oracle (install g++-N)")
+    got = check(oracle, tmp_path, [case_line(t) for t in SORT_TIES], min_errors=2)
+    assert sum(x.startswith("text") for x in got) >= 7
 
 
 def test_statements(oracle, tmp_path):

@@ -6,6 +6,9 @@ type; here a builtin is identified by `(receiver kind, name)` and dispatched by 
 """
 
 from std.collections import List
+from std.ffi import external_call
+from std.sys import CompilationTarget
+from std.memory import alloc
 
 from ninfer.text.jinja.jstring import (
     JString,
@@ -14,6 +17,7 @@ from ninfer.text.jinja.jstring import (
     string_bytes,
     sub_string,
 )
+from ninfer.text.jinja.stdsort import SortSpec, std_sort
 from ninfer.text.jinja.value import (
     Heap,
     FuncArgs,
@@ -187,11 +191,7 @@ def call_global(mut h: Heap, name: String, mut a: FuncArgs) raises -> Int:
     if name == "strftime_now":
         ev1(h, a, C_STRING)
         var fmt = as_string(h, a.get_pos(0)).str()
-        if fmt.byte_length() == 0:
-            return h.text("")
-        if fmt.find("%") < 0:
-            return h.string(JString(fmt, 0, True))
-        raise Error("NotImplemented: strftime_now is not supported by the Mojo port")
+        return h.string(JString(_strftime(fmt, a.ctx.time), 0, True) if fmt.byte_length() > 0 else JString(_strftime("", a.ctx.time)))
     if name == "range":
         a.ensure_count(1, 3)
         # ensure_vals<int,int,int>(true,false,false): one required argument, type-checked
@@ -226,6 +226,42 @@ def call_global(mut h: Heap, name: String, mut a: FuncArgs) raises -> Int:
     if name.startswith("test_is_"):
         return call_test(h, String(name[byte=8:]), a)
     raise Error("Unknown function '" + name + "'")
+
+
+def _strftime(fmt: String, timestamp: Int) raises -> String:
+    """`localtime_r` + `strftime` from libc, with the C++ builtin's buffer-doubling loop."""
+    var tm = alloc[UInt8](256)
+    var tt = alloc[Int](1)
+    tt[0] = timestamp
+    for i in range(256):
+        tm[i] = 0
+    var local = external_call["localtime_r", Int](tt, tm)
+    tt.free()
+    if local == 0:
+        tm.free()
+        raise Error("strftime_now: invalid time")
+    if fmt.byte_length() == 0:
+        tm.free()
+        return String()
+    var format = List[UInt8]()
+    for b in fmt.as_bytes():
+        format.append(b)
+    format.append(0)
+    var cap = 128
+    while cap <= 65536:
+        var buf = alloc[UInt8](cap)
+        var n = external_call["strftime", Int](buf, cap, format.unsafe_ptr(), tm)
+        if n > 0:
+            var out = List[UInt8]()
+            for i in range(n):
+                out.append(buf[i])
+            buf.free()
+            tm.free()
+            return String(unsafe_from_utf8=out)
+        buf.free()
+        cap *= 2
+    tm.free()
+    raise Error("strftime_now: failed to format time")
 
 
 def out_push(mut h: Heap, arr: Int, v: Int) raises:
@@ -430,91 +466,48 @@ def _split_string(mut h: Heap, a: FuncArgs, reverse: Bool) raises -> Int:
     return result
 
 
-def _stoi(text: String, base_in: Int) raises -> Int:
-    """`std::stoi(str, nullptr, base)`: raises when nothing converts or the value leaves int range."""
-    var b = text.as_bytes()
-    var i = 0
-    while i < len(b) and (b[i] == 0x20 or (b[i] >= 0x09 and b[i] <= 0x0D)):
-        i += 1
-    var neg = False
-    if i < len(b) and (b[i] == 0x2B or b[i] == 0x2D):
-        neg = b[i] == 0x2D
-        i += 1
-    var base = base_in
-    if (base == 0 or base == 16) and i + 1 < len(b) and b[i] == 0x30 and (b[i + 1] == 0x78 or b[i + 1] == 0x58):
-        if i + 2 < len(b) and _digit(b[i + 2]) >= 0 and _digit(b[i + 2]) < 16:
-            i += 2
-            base = 16
-    if base == 0:
-        base = 8 if (i < len(b) and b[i] == 0x30) else 10
-    var any = False
-    var value = 0
-    while i < len(b):
-        var d = _digit(b[i])
-        if d < 0 or d >= base:
-            break
-        any = True
-        value = value * base + d
-        if value > 4294967296:
-            raise Error("out of range")
-        i += 1
-    if not any:
-        raise Error("no conversion")
-    if neg:
-        value = -value
-    if value > 2147483647 or value < -2147483648:
-        raise Error("out of range")
+def _errno() -> UnsafePointer[Int32, MutAnyOrigin]:
+    comptime if CompilationTarget.is_macos():
+        return external_call["__error", UnsafePointer[Int32, MutAnyOrigin]]()
+    else:
+        return external_call["__errno_location", UnsafePointer[Int32, MutAnyOrigin]]()
+
+
+def _c_text(text: String) -> List[UInt8]:
+    var out = List[UInt8]()
+    for b in text.as_bytes():
+        out.append(b)
+    out.append(0)
+    return out^
+
+
+def _stoi(text: String, base: Int) raises -> Int:
+    """`std::stoi(str, nullptr, base)`: libstdc++ calls `strtol` and rejects ERANGE and values outside int."""
+    var buffer = _c_text(text)
+    var end = alloc[Int](1)
+    _errno()[] = 0
+    var value = external_call["strtol", Int](buffer.unsafe_ptr(), end, Int32(base))
+    var consumed = end[0] != Int(buffer.unsafe_ptr())
+    end.free()
+    if not consumed:
+        raise Error("stoi: no conversion")
+    if _errno()[] == 34 or value > 2147483647 or value < -2147483648:
+        raise Error("stoi: out of range")
     return value
 
 
-def _digit(c: UInt8) -> Int:
-    if c >= 0x30 and c <= 0x39:
-        return Int(c) - 0x30
-    if c >= 0x61 and c <= 0x7A:
-        return Int(c) - 0x61 + 10
-    if c >= 0x41 and c <= 0x5A:
-        return Int(c) - 0x41 + 10
-    return -1
-
-
 def _stod(text: String) raises -> Float64:
-    var b = text.as_bytes()
-    var i = 0
-    while i < len(b) and (b[i] == 0x20 or (b[i] >= 0x09 and b[i] <= 0x0D)):
-        i += 1
-    var start = i
-    if i < len(b) and (b[i] == 0x2B or b[i] == 0x2D):
-        i += 1
-    var rest = String(text[byte=i:]).lower()
-    if rest.startswith("infinity") or rest.startswith("inf"):
-        return -Float64.MAX * 2.0 if b[start] == 0x2D else Float64.MAX * 2.0
-    if rest.startswith("nan"):
-        return Float64.MAX * 2.0 - Float64.MAX * 2.0
-    var digits = 0
-    while i < len(b) and b[i] >= 0x30 and b[i] <= 0x39:
-        i += 1
-        digits += 1
-    if i < len(b) and b[i] == 0x2E:
-        i += 1
-        while i < len(b) and b[i] >= 0x30 and b[i] <= 0x39:
-            i += 1
-            digits += 1
-    if digits == 0:
-        raise Error("no conversion")
-    if i < len(b) and (b[i] == 0x65 or b[i] == 0x45):
-        var j = i + 1
-        if j < len(b) and (b[j] == 0x2B or b[j] == 0x2D):
-            j += 1
-        var e = 0
-        while j < len(b) and b[j] >= 0x30 and b[j] <= 0x39:
-            j += 1
-            e += 1
-        if e > 0:
-            i = j
-    var prefix = String(text[byte=start:i])
-    var value = atof(prefix)
-    if value > 1.7976931348623157e308 or value < -1.7976931348623157e308:
-        raise Error("out of range")
+    """`std::stod`: libstdc++ calls `strtod` and rejects ERANGE (overflow, and inexact subnormals)."""
+    var buffer = _c_text(text)
+    var end = alloc[Int](1)
+    _errno()[] = 0
+    var value = external_call["strtod", Float64](buffer.unsafe_ptr(), end)
+    var consumed = end[0] != Int(buffer.unsafe_ptr())
+    end.free()
+    if not consumed:
+        raise Error("stod: no conversion")
+    if _errno()[] == 34:
+        raise Error("stod: out of range")
     return value
 
 
@@ -941,36 +934,6 @@ def _indent(mut h: Heap, a: FuncArgs) raises -> Int:
 # --- arrays ------------------------------------------------------------------------------------
 
 
-def _sorted(mut h: Heap, items: List[Int], reverse: Bool, attribute: Int, attr_is_int: Bool, attr_int: Int) raises -> List[Int]:
-    var arr = items.copy()
-    var op = OP_GT if reverse else OP_LT
-    for i in range(1, len(arr)):
-        var j = i
-        while j > 0:
-            var a = arr[j]
-            var b = arr[j - 1]
-            var va = a
-            var vb = b
-            if h.nodes[attribute].kind != V_UNDEF:
-                if attr_is_int and is_array_kind(h.nodes[a].kind) and is_array_kind(h.nodes[b].kind):
-                    va = _array_at(h, a, attr_int)
-                    vb = _array_at(h, b, attr_int)
-                elif (not attr_is_int) and h.nodes[a].kind == V_OBJECT and h.nodes[b].kind == V_OBJECT:
-                    va = obj_at_strict(h, a, attribute)
-                    vb = obj_at_strict(h, b, attribute)
-                else:
-                    raise Error(
-                        "sort: unsupported object attribute comparison between " + vtype(h, a) + " and " + vtype(h, b)
-                    )
-            if value_compare(h, va, vb, op):
-                arr[j] = b
-                arr[j - 1] = a
-                j -= 1
-            else:
-                break
-    return arr^
-
-
 def _array_at(h: Heap, arr: Int, index_in: Int) raises -> Int:
     var index = index_in
     var n = len(h.nodes[arr].arr)
@@ -1064,8 +1027,12 @@ def _array_method(mut h: Heap, name: String, mut a: FuncArgs) raises -> Int:
         _ = kwarg_or_pos(h, a, "case_sensitive", 2)
         var attr_is_int = h.nodes[attribute].kind == V_INT
         var attr_int = h.nodes[attribute].i if attr_is_int else 0
-        var items_copy = h.nodes[val].arr.copy()
-        var sorted = _sorted(h, items_copy, reverse, attribute, attr_is_int, attr_int)
+        var spec = SortSpec(0, reverse)
+        spec.attribute = attribute
+        spec.attr_is_int = attr_is_int
+        spec.attr_int = attr_int
+        var sorted = h.nodes[val].arr.copy()
+        std_sort(h, spec, sorted)
         return _copy_kind(h, val, sorted)
     if name == "reverse":
         ev1(h, a, C_ARRAY)
@@ -1196,26 +1163,18 @@ def _object_method(mut h: Heap, name: String, mut a: FuncArgs) raises -> Int:
         var val_by = kwarg_or_pos(h, a, "by", 2)
         var reverse = as_bool(h, kwarg_or_pos(h, a, "reverse", 3))
         var by_value = h.nodes[val_by].kind == V_STRING and h.nodes[val_by].s.str() == "value"
-        var keys = h.nodes[val_input].keys.copy()
-        var vals = h.nodes[val_input].vals.copy()
-        var op = OP_GT if reverse else OP_LT
-        for i in range(1, len(keys)):
-            var j = i
-            while j > 0:
-                var less: Bool
-                if by_value:
-                    less = value_compare(h, vals[j], vals[j - 1], op)
-                else:
-                    less = value_compare(h, keys[j], keys[j - 1], op)
-                if not less:
-                    break
-                var tk = keys[j]
-                keys[j] = keys[j - 1]
-                keys[j - 1] = tk
-                var tv = vals[j]
-                vals[j] = vals[j - 1]
-                vals[j - 1] = tv
-                j -= 1
+        var spec = SortSpec(2 if by_value else 1, reverse)
+        spec.keys = h.nodes[val_input].keys.copy()
+        spec.vals = h.nodes[val_input].vals.copy()
+        var order = List[Int]()
+        for i in range(len(spec.keys)):
+            order.append(i)
+        std_sort(h, spec, order)
+        var keys = List[Int]()
+        var vals = List[Int]()
+        for i in order:
+            keys.append(spec.keys[i])
+            vals.append(spec.vals[i])
         var out = h.object()
         h.nodes[out].keys = keys^
         h.nodes[out].vals = vals^

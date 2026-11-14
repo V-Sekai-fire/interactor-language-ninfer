@@ -8,6 +8,7 @@ expressions, comments, trimming markers, string escapes, numbers, unary operator
 from __future__ import annotations
 
 from pathlib import Path
+import os
 import random
 import shutil
 import subprocess
@@ -17,7 +18,11 @@ import pytest
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 MOJO = shutil.which("mojo")
-CXX = shutil.which("c++") or shutil.which("clang++") or shutil.which("g++")
+# The engine ships on Linux with libstdc++, so prefer a GNU compiler (Homebrew's g++-N) as the oracle;
+# its std::sort and typeid names are the ones the port reproduces.
+CXX = (shutil.which(os.environ.get("NINFER_CXX", "")) if os.environ.get("NINFER_CXX") else None) or next(
+    (c for c in (shutil.which(f"g++-{v}") for v in range(20, 10, -1)) if c), None
+) or shutil.which("c++") or shutil.which("clang++") or shutil.which("g++")
 pytestmark = pytest.mark.skipif(MOJO is None or CXX is None, reason="needs mojo and a C++ compiler")
 
 
