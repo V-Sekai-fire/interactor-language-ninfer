@@ -23,8 +23,10 @@ Rules for the split:
 | # | Piece | C++ source | Status |
 |---|---|---|---|
 | 1 | Artifact reader: framing, directory, shards, exact range reads | `src/artifact/{framing,schema,reader}` | #7 |
-| 2 | Formats, layouts, tensor geometry, binder | `src/artifact/{formats,layouts,binder}`, `src/core/weight*` | this PR (Host side; device placement waits for step 4) |
-| 3 | Tokenizer and chat template | `src/text`, `src/models/qwen3_5/frontend` | |
+| 2 | Formats, layouts, tensor geometry, binder | `src/artifact/{formats,layouts,binder}`, `src/core/weight*` | #8 (Host side; device placement waits for step 4) |
+| 3 | Unicode: UTF-8, categories, NFC | `src/text/unicode.*` | this PR |
+| 3b | BPE tokenizer | `src/models/qwen3_5/frontend/tokenizer.*` | |
+| 3c | Chat template (Jinja) and tool-call parser | `src/text/jinja.*`, `frontend/chat_template.*`, `tool_call_parser.*` | |
 | 4 | Materializer and host transcode | `src/artifact/{materializer,transcode}` | |
 | 5 | Ternary and groupwise-int matmul kernels (Mojo GPU) | `src/ops` | |
 | 6 | Gated DeltaNet layer, RV32IM in-weights computer | `src/ops`, `src/models/qwen3_5` | |
@@ -38,9 +40,12 @@ reference in `tools/artifact`).
 
 ```
 mojo/ninfer/core/       weight.mojo (QType, QuantLayout, WeightGeometry)
+mojo/ninfer/text/       unicode.mojo, unicode_tables.mojo (generated from utf8proc)
 mojo/ninfer/artifact/   json framing schema reader formats layouts binder
 mojo/tests/             dump_artifact.mojo  geometry_probe.mojo
-                        test_artifact_reader.py  test_geometry.py
+                        test_artifact_reader.py  test_geometry.py  test_unicode.py
+                        unicode_probe.mojo  unicode_oracle.cpp (the engine's own unicode.cpp)
+mojo/tools/             gen_unicode_tables.py
 ```
 
 ```sh
