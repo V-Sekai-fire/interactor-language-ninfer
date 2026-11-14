@@ -14,7 +14,6 @@ from std.collections import List
 
 from ninfer.artifact.json import (
     Json,
-    NO_DEPTH_LIMIT,
     json_accepts,
     parse_json,
     ARRAY,
@@ -39,9 +38,11 @@ comptime R_UNDECLARED_TOOL = 4
 comptime R_TRAILING_CONTENT = 5
 
 
-# Real tool schemas nest a handful of levels. `Json::parse` has no bound: a caller that must accept
-# anything it accepts passes `max_depth=NO_DEPTH_LIMIT` (the reader keeps its stack on the heap).
-comptime DEFAULT_TOOL_JSON_MAX_DEPTH = 64
+# `Json::parse` has no bound of its own, but the engine's oracle (g++ -O1, an 8 MiB stack) segfaults
+# once a document nests 37,320 containers deep and reads 37,319. The limit is that last readable depth,
+# counted from the root as 0 (so 37,318); a tool nested deeper is discarded. The edge moves with the
+# stack, so tests hold the port to the oracle well below it and pin only the port's own edge.
+comptime TOOL_JSON_MAX_DEPTH = 37318
 
 
 def fallback_reason_name(reason: Int) -> String:
@@ -618,10 +619,9 @@ def build_tool_call_output_contract(
     tool_jsons: List[String],
     enabled: Bool,
     forced_tool_name: String = String(),
-    max_depth: Int = DEFAULT_TOOL_JSON_MAX_DEPTH,
 ) -> ToolCallOutputContract:
     """With `enabled` false the contract is the C++'s null one: the decoder passes text through.
-    A tool definition nested deeper than `max_depth` is discarded, as one that does not parse is."""
+    A tool definition nested deeper than `TOOL_JSON_MAX_DEPTH` is discarded, as one that does not parse is."""
     var contract = ToolCallOutputContract()
     if not enabled:
         return contract^
@@ -631,7 +631,7 @@ def build_tool_call_output_contract(
     for tool_json in tool_jsons:
         var doc = Json()
         try:
-            var root = parse_json(_bytes_of(tool_json), "tool definition", doc, False, max_depth)
+            var root = parse_json(_bytes_of(tool_json), "tool definition", doc, False, TOOL_JSON_MAX_DEPTH)
             _append_tool_contract(contract, doc, root)
         except:
             pass  # Json::parse(..., allow_exceptions=false) discards what it cannot parse

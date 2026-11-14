@@ -145,10 +145,10 @@ def hx(b: bytes) -> str:
     return b.hex()
 
 
-def case(kind, contract, forced, max_len, chunks, enabled=True, depth=None):
+def case(kind, contract, forced, max_len, chunks, enabled=True):
     tools = ",".join(hx(t.encode()) for t in contract)
     fields = [kind, "1" if enabled else "0", hx(forced.encode()), str(max_len), tools, ",".join(chunks)]
-    return "\t".join(fields + ([str(depth)] if depth else []))
+    return "\t".join(fields)
 
 
 def run_both(oracle, tmp_path, lines):
@@ -253,34 +253,21 @@ def _deep_tool(depth):
 
 
 def test_deeply_nested_tool_definitions(oracle, tmp_path):
-    """`Json::parse` has no depth limit; with `max_depth=NO_DEPTH_LIMIT` (-1) the port accepts what it accepts, at any depth."""
-    lines = []
-    for depth in (100, 511, 513, 2000, 15000, 20000):
-        lines.append(case("parse", [_deep_tool(depth)], "", 64, [hx(CALL("deep", [("x", "v")]).encode())], depth=-1))
+    """Deep tools read as the C++ reads them, up to well below where the C++ itself runs out of stack."""
+    lines = [case("parse", [_deep_tool(d)], "", 64, [hx(CALL("deep", [("x", "v")]).encode())])
+             for d in (100, 511, 513, 2000, 15000, 36000)]
     got = run_both(oracle, tmp_path, lines)
     assert all(x.startswith("parse resp=1") for x in got), got[:2]
 
 
-def test_default_depth_is_64_and_the_escape_hatch_lifts_it(oracle, tmp_path):
-    """By default a tool nested past 64 levels is discarded; passing `max_depth` keeps it."""
+def test_tool_nested_past_the_limit_is_discarded(tmp_path):
+    """The limit is the last depth the C++ oracle reads (37,319 containers: 6 around a schema nested 37,313
+    deep). One level more and the tool is discarded, however far it goes, without overflowing our stack."""
     call = hx(CALL("deep", [("x", "v")]).encode())
-    lines = [case("parse", [_deep_tool(d)], "", 64, [call], depth=dp) for d in (20, 200) for dp in (None, 1000)]
     src = tmp_path / "c.txt"
-    src.write_text("\n".join(lines) + "\n")
+    src.write_text("\n".join(case("parse", [_deep_tool(d)], "", 64, [call]) for d in (37313, 37314, 1_000_000)) + "\n")
     r = subprocess.run([MOJO, "run", "-I", str(ROOT / "mojo"), str(HERE / "tool_call_probe.mojo"), str(src)],
                        capture_output=True, text=True, timeout=600)
     assert r.returncode == 0, r.stderr[-1500:]
-    shallow_default, shallow_lifted, deep_default, deep_lifted = r.stdout.strip("\n").split("\n")
-    assert shallow_default == shallow_lifted, "a shallow tool is unaffected"
-    assert deep_default != deep_lifted, "the default drops a tool nested past 64 levels, the escape hatch keeps it"
-
-
-def test_no_depth_limit_goes_past_what_the_cpp_survives(tmp_path):
-    """The C++ oracle itself crashes (stack) somewhere past 20,000 levels; the heap-stack reader does not."""
-    call = hx(CALL("deep", [("x", "v")]).encode())
-    src = tmp_path / "c.txt"
-    src.write_text(case("parse", [_deep_tool(1_000_000)], "", 64, [call], depth=-1) + "\n")
-    r = subprocess.run([MOJO, "run", "-I", str(ROOT / "mojo"), str(HERE / "tool_call_probe.mojo"), str(src)],
-                       capture_output=True, text=True, timeout=600)
-    assert r.returncode == 0, r.stderr[-1500:]
-    assert r.stdout.startswith("parse resp=1"), r.stdout[:200]
+    at, past, far = r.stdout.strip("\n").split("\n")
+    assert past == far and past != at, "37,313 deep is a tool; 37,314 and beyond is not"

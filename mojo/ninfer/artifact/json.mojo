@@ -358,13 +358,13 @@ struct _Parser(Movable):
 
     def parse_value(mut self, mut doc: Json, depth: Int) raises -> Int:
         """One value, read with an explicit stack of open containers: the nesting depth costs heap,
-        not call stack, so `max_depth < 0` (no bound, as nlohmann) is safe at any depth."""
+        not call stack, so `max_depth` can be far larger than a call stack allows."""
         var stack = List[_Frame]()
         var result = 0
         var have = False  # `result` holds a finished value to attach to the open container
         while True:
             if not have:
-                if self.max_depth >= 0 and depth + len(stack) > self.max_depth:
+                if depth + len(stack) > self.max_depth:
                     raise self.fail("nesting too deep")
                 self.skip_ws()
                 if self.pos >= len(self.text):
@@ -472,9 +472,6 @@ def _append_utf8(mut out: List[UInt8], cp: Int):
         out.append(b)
 
 
-comptime NO_DEPTH_LIMIT = -1
-
-
 def parse_json(
     var text: List[UInt8], label: String, mut doc: Json, strict_keys: Bool = True, max_depth: Int = 512
 ) raises -> Int:
@@ -482,7 +479,7 @@ def parse_json(
 
     `strict_keys=False` keeps the last of a repeated member, as nlohmann does for
     `Json::parse` (the artifact directory is the strict case). `max_depth` bounds the nesting
-    (`NO_DEPTH_LIMIT` for none, as nlohmann); the reader keeps its open containers on the heap."""
+    ; the reader keeps its open containers on the heap, so a large bound is safe."""
     var p = _Parser(text^, label, strict_keys, max_depth)
     var root = p.parse_value(doc, 0)
     p.skip_ws()

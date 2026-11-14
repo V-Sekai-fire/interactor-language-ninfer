@@ -6,7 +6,6 @@ from ninfer.frontend.tool_call_parser import (
     GeneratedToolCall,
     ToolCallParseDiagnostics,
     ToolCallOutputDecoder,
-    ToolCallOutputContract,
     build_tool_call_output_contract,
     parse_qwen_tool_call_output,
     structured_tool_call_format,
@@ -75,11 +74,7 @@ def _run(line: String, mut out: String) raises -> String:
         for t in _split(f[4], ","):
             tools.append(String(unsafe_from_utf8=_unhex(t)))
     var forced = String(unsafe_from_utf8=_unhex(f[2]))
-    var contract = ToolCallOutputContract()
-    if len(f) > 6:  # an optional seventh field raises max_depth; without it the API default applies
-        contract = build_tool_call_output_contract(tools, f[1] == "1", forced, atol(f[6]))
-    else:
-        contract = build_tool_call_output_contract(tools, f[1] == "1", forced)
+    var contract = build_tool_call_output_contract(tools, f[1] == "1", forced)
     var max_len = atol(f[3])
     if f[0] == "format":
         if not contract.enabled:
