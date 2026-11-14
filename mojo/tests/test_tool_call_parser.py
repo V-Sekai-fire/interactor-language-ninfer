@@ -255,19 +255,19 @@ def _deep_tool(depth):
 def test_deeply_nested_tool_definitions(oracle, tmp_path):
     """Deep tools read as the C++ reads them, up to well below where the C++ itself runs out of stack."""
     lines = [case("parse", [_deep_tool(d)], "", 64, [hx(CALL("deep", [("x", "v")]).encode())])
-             for d in (100, 511, 513, 2000, 15000, 36000)]
+             for d in (100, 511, 513, 2000, 15000, 32000)]
     got = run_both(oracle, tmp_path, lines)
     assert all(x.startswith("parse resp=1") for x in got), got[:2]
 
 
 def test_tool_nested_past_the_limit_is_discarded(tmp_path):
-    """The limit is the last depth the C++ oracle reads (37,319 containers: 6 around a schema nested 37,313
-    deep). One level more and the tool is discarded, however far it goes, without overflowing our stack."""
+    """The limit is 2^15 levels from the root; a schema nested 32,763 deep (5 containers around it) is the last tool
+    that reads, and one level more is discarded, however far it goes, without overflowing our stack."""
     call = hx(CALL("deep", [("x", "v")]).encode())
     src = tmp_path / "c.txt"
-    src.write_text("\n".join(case("parse", [_deep_tool(d)], "", 64, [call]) for d in (37313, 37314, 1_000_000)) + "\n")
+    src.write_text("\n".join(case("parse", [_deep_tool(d)], "", 64, [call]) for d in (32763, 32764, 1_000_000)) + "\n")
     r = subprocess.run([MOJO, "run", "-I", str(ROOT / "mojo"), str(HERE / "tool_call_probe.mojo"), str(src)],
                        capture_output=True, text=True, timeout=600)
     assert r.returncode == 0, r.stderr[-1500:]
     at, past, far = r.stdout.strip("\n").split("\n")
-    assert past == far and past != at, "37,313 deep is a tool; 37,314 and beyond is not"
+    assert past == far and past != at, "32,763 deep is a tool; 32,764 and beyond is not"

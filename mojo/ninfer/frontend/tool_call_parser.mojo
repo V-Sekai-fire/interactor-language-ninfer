@@ -39,10 +39,10 @@ comptime R_TRAILING_CONTENT = 5
 
 
 # `Json::parse` has no bound of its own, but the engine's oracle (g++ -O1, an 8 MiB stack) segfaults
-# once a document nests 37,320 containers deep and reads 37,319. The limit is that last readable depth,
-# counted from the root as 0 (so 37,318); a tool nested deeper is discarded. The edge moves with the
-# stack, so tests hold the port to the oracle well below it and pin only the port's own edge.
-comptime TOOL_JSON_MAX_DEPTH = 37318
+# once a document nests 37,320 containers deep. The limit is 2^15 levels counted from the root as 0, a
+# round number below that edge on every stack we know, so the port never reads what the C++ cannot.
+# A tool nested deeper is discarded.
+comptime TOOL_JSON_MAX_DEPTH = 32768
 
 
 def fallback_reason_name(reason: Int) -> String:
