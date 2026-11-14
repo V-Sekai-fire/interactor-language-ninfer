@@ -259,6 +259,9 @@ struct _Parser(Movable):
             span.append(self.text[i])
         var node = JsonNode(FLOAT)
         node.f = atof(String(unsafe_from_utf8=span))
+        if node.f - node.f != 0.0:
+            # nlohmann rejects a number that does not fit a double ("number overflow parsing")
+            raise self.fail("number overflow")
         return doc.add(node^)
 
     def parse_value(mut self, mut doc: Json, depth: Int) raises -> Int:
