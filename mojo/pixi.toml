@@ -1,14 +1,13 @@
 [workspace]
 name = "ninfer-mojo"
 description = "Mojo inference stack for NInfer; Elixir (via mojoler NIFs) serves it"
-channels = ["https://conda.modular.com/max", "https://repo.prefix.dev/modular-community", "conda-forge"]
+channels = ["https://conda.modular.com/max-nightly", "conda-forge"]
 platforms = ["osx-arm64", "linux-64"]
 
 [dependencies]
-mojo = "==1.1.0"
-emberjson = ">=0.4.0,<0.5"
+mojo = "==1.3.0.dev2026111316"
 python = "3.12.*"
 pytest = "*"
 
 [tasks]
-test = "python -m pytest mojo/tests -q"
+test = "python -m pytest tests -q"

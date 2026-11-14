@@ -58,4 +58,4 @@ pixi run --manifest-path mojo/pixi.toml test
 
 The tests write artifacts with the production writer (`tools/artifact`), single-file and
 sharded, read them with the Mojo reader, and compare against the Python reference reader and
-against the C++ validation messages. Pinned to Mojo 1.1.0, the version the modular-community packages (EmberJson) are built for; verified there.
+against the C++ validation messages. Pinned to the 1.3 nightly 1.3.0.dev2026111316, which the `if case` unwrapping needs; verified there. EmberJson is not a dependency: its packages are built for Mojo 1.1.0 and its source does not compile on 1.3 yet, and nothing here imports it (`artifact/json.mojo` is the JSON reader).
