@@ -8,6 +8,7 @@ the decoder in random chunks, with and without a forced opener."""
 from __future__ import annotations
 
 import json
+import os
 import random
 import shutil
 import subprocess
@@ -144,9 +145,10 @@ def hx(b: bytes) -> str:
     return b.hex()
 
 
-def case(kind, contract, forced, max_len, chunks, enabled=True):
+def case(kind, contract, forced, max_len, chunks, enabled=True, depth=None):
     tools = ",".join(hx(t.encode()) for t in contract)
-    return "\t".join([kind, "1" if enabled else "0", hx(forced.encode()), str(max_len), tools, ",".join(chunks)])
+    fields = [kind, "1" if enabled else "0", hx(forced.encode()), str(max_len), tools, ",".join(chunks)]
+    return "\t".join(fields + ([str(depth)] if depth else []))
 
 
 def run_both(oracle, tmp_path, lines):
@@ -245,13 +247,29 @@ def test_deeply_nested_values(oracle, tmp_path):
     assert sum(x.startswith("parse resp=1") for x in got) == len(texts)
 
 
+def _deep_tool(depth):
+    nested = '{"a":' * depth + "{}" + "}" * depth
+    return tool("deep", {"x": {"type": "string"}}).replace('"type": "string"', '"type": "string", "extra": ' + nested)
+
+
 def test_deeply_nested_tool_definitions(oracle, tmp_path):
-    """`Json::parse` has no depth limit, so a tool whose schema nests past 512 levels is still a tool."""
+    """`Json::parse` has no depth limit; with the escape hatch raised the port accepts what it accepts."""
     lines = []
     for depth in (100, 511, 513, 2000, 15000):
-        nested = '{"a":' * depth + "{}" + "}" * depth
-        text = tool("deep", {"x": {"type": "string"}}).replace('"type": "string"', '"type": "string", "extra": ' + nested)
-        lines.append(case("parse", [text], "", 64, [hx(CALL("deep", [("x", "v")]).encode())]))
-        lines.append(case("parse", [text, CALC], "", 64, [hx(CALL("calc", [("expression", "1")]).encode())]))
+        lines.append(case("parse", [_deep_tool(depth)], "", 64, [hx(CALL("deep", [("x", "v")]).encode())], depth=20000))
     got = run_both(oracle, tmp_path, lines)
     assert all(x.startswith("parse resp=1") for x in got), got[:2]
+
+
+def test_default_depth_is_64_and_the_escape_hatch_lifts_it(oracle, tmp_path):
+    """By default a tool nested past 64 levels is discarded; passing `max_depth` keeps it."""
+    call = hx(CALL("deep", [("x", "v")]).encode())
+    lines = [case("parse", [_deep_tool(d)], "", 64, [call], depth=dp) for d in (20, 200) for dp in (None, 1000)]
+    src = tmp_path / "c.txt"
+    src.write_text("\n".join(lines) + "\n")
+    r = subprocess.run([MOJO, "run", "-I", str(ROOT / "mojo"), str(HERE / "tool_call_probe.mojo"), str(src)],
+                       capture_output=True, text=True, timeout=600)
+    assert r.returncode == 0, r.stderr[-1500:]
+    shallow_default, shallow_lifted, deep_default, deep_lifted = r.stdout.strip("\n").split("\n")
+    assert shallow_default == shallow_lifted, "a shallow tool is unaffected"
+    assert deep_default != deep_lifted, "the default drops a tool nested past 64 levels, the escape hatch keeps it"
