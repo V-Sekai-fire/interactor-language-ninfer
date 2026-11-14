@@ -7,6 +7,7 @@ The source is handled as bytes, as in C++: `src[pos]` one past the end reads as 
 """
 
 from std.collections import List
+from ninfer.text.jinja.error import JinjaError, jinja_error
 
 # token types, in the C++ enum order
 comptime T_EOF = 0
@@ -152,10 +153,10 @@ struct _Cursor(Movable):
                 return True
         return False
 
-    def fail(self, msg: String, pos: Int) -> Error:
-        return Error(fmt_error_with_source("lexer", msg, self.original, pos))
+    def fail(self, msg: String, pos: Int) -> JinjaError:
+        return jinja_error(fmt_error_with_source("lexer", msg, self.original, pos))
 
-    def consume_while(mut self, kind: Int, quote: UInt8 = 0) raises -> List[UInt8]:
+    def consume_while(mut self, kind: Int, quote: UInt8 = 0) raises JinjaError -> List[UInt8]:
         """kind: 0 whitespace, 1 word, 2 digits, 3 'not the quote'."""
         var out = List[UInt8]()
         while True:
@@ -188,7 +189,7 @@ struct _Cursor(Movable):
                 raise self.fail("unexpected end of input during consume_while", self.pos)
         return out^
 
-    def consume_numeric(mut self) raises -> List[UInt8]:
+    def consume_numeric(mut self) raises JinjaError -> List[UInt8]:
         var num = self.consume_while(2)
         if (
             self.pos < len(self.src)
@@ -264,7 +265,7 @@ def _table_type() -> List[Int]:
     return out^
 
 
-def tokenize(source: List[UInt8]) raises -> LexerResult:
+def tokenize(source: List[UInt8]) raises JinjaError -> LexerResult:
     var result = LexerResult()
     if len(source) == 0:
         return result^
