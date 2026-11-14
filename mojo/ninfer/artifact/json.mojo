@@ -104,12 +104,14 @@ struct _Parser(Movable):
     var pos: Int
     var label: String
     var strict_keys: Bool  # False: a repeated member replaces the earlier one (nlohmann)
+    var max_depth: Int
 
-    def __init__(out self, var text: List[UInt8], label: String, strict_keys: Bool):
+    def __init__(out self, var text: List[UInt8], label: String, strict_keys: Bool, max_depth: Int = 512):
         self.text = text^
         self.pos = 0
         self.label = label
         self.strict_keys = strict_keys
+        self.max_depth = max_depth
 
     def fail(self, what: String) -> Error:
         return Error(self.label + ": " + what + " at byte " + String(self.pos))
@@ -264,93 +266,195 @@ struct _Parser(Movable):
             raise self.fail("number overflow")
         return doc.add(node^)
 
-    def parse_value(mut self, mut doc: Json, depth: Int) raises -> Int:
-        if depth > 512:
-            raise self.fail("nesting too deep")
+    def accept(mut self) raises:
+        """Raises unless the text is exactly one JSON value. The same grammar as `parse_value`
+        (strings, numbers and literals are read by the same methods) with an explicit stack instead
+        of recursion, so depth is bounded only by memory, as in `nlohmann::json::accept`."""
+        var scratch = Json()
+        var stack = List[UInt8]()  # 0x5B array, 0x7B object
+        var expect_value = True
+        while True:
+            if expect_value:
+                self.skip_ws()
+                if self.pos >= len(self.text):
+                    raise self.fail("unexpected end of input")
+                var c = self.text[self.pos]
+                if c == 0x7B or c == 0x5B:
+                    self.pos += 1
+                    self.skip_ws()
+                    var closer: UInt8 = 0x7D if c == 0x7B else 0x5D
+                    if self.pos < len(self.text) and self.text[self.pos] == closer:
+                        self.pos += 1
+                        expect_value = False
+                        continue
+                    stack.append(c)
+                    if c == 0x7B:
+                        self._accept_key()
+                    continue
+                if c == 0x22:
+                    _ = self.parse_string()
+                elif c == 0x74:
+                    self.expect_word("true")
+                elif c == 0x66:
+                    self.expect_word("false")
+                elif c == 0x6E:
+                    self.expect_word("null")
+                elif c == 0x2D or (c >= 0x30 and c <= 0x39):
+                    _ = self.parse_number(scratch)
+                    scratch.nodes.clear()
+                else:
+                    raise self.fail("unexpected character")
+                expect_value = False
+            else:
+                if len(stack) == 0:
+                    self.skip_ws()
+                    if self.pos != len(self.text):
+                        raise self.fail("trailing characters")
+                    return
+                self.skip_ws()
+                if self.pos >= len(self.text):
+                    raise self.fail("unterminated container")
+                var top = stack[len(stack) - 1]
+                var c = self.text[self.pos]
+                if c == 0x2C:
+                    self.pos += 1
+                    if top == 0x7B:
+                        self._accept_key()
+                    expect_value = True
+                elif (top == 0x7B and c == 0x7D) or (top == 0x5B and c == 0x5D):
+                    self.pos += 1
+                    _ = stack.pop()
+                else:
+                    raise self.fail("expected ',' or a closing bracket")
+
+    def _accept_key(mut self) raises:
         self.skip_ws()
-        if self.pos >= len(self.text):
-            raise self.fail("unexpected end of input")
-        var c = self.text[self.pos]
-        if c == 0x7B:  # {
-            self.pos += 1
-            var node = JsonNode(OBJECT)
-            var seen = Dict[String, Int]()
-            self.skip_ws()
-            if self.pos < len(self.text) and self.text[self.pos] == 0x7D:
-                self.pos += 1
-                return doc.add(node^)
-            while True:
-                self.skip_ws()
-                if self.pos >= len(self.text) or self.text[self.pos] != 0x22:
-                    raise self.fail("expected object key")
-                var key = self.parse_string()
-                var replace_at = -1
-                if key in seen:
-                    if self.strict_keys:
-                        raise Error(self.label + ": duplicate JSON member " + key)
-                    replace_at = seen[key]
-                else:
-                    seen[key] = len(node.keys)
-                self.skip_ws()
-                if self.pos >= len(self.text) or self.text[self.pos] != 0x3A:
-                    raise self.fail("expected ':'")
-                self.pos += 1
-                var child = self.parse_value(doc, depth + 1)
-                if replace_at >= 0:
-                    node.items[replace_at] = child
-                else:
-                    node.keys.append(key^)
-                    node.items.append(child)
-                self.skip_ws()
-                if self.pos >= len(self.text):
-                    raise self.fail("unterminated object")
-                if self.text[self.pos] == 0x2C:
-                    self.pos += 1
-                    continue
-                if self.text[self.pos] == 0x7D:
-                    self.pos += 1
-                    break
-                raise self.fail("expected ',' or '}'")
-            return doc.add(node^)
-        if c == 0x5B:  # [
-            self.pos += 1
-            var node = JsonNode(ARRAY)
-            self.skip_ws()
-            if self.pos < len(self.text) and self.text[self.pos] == 0x5D:
-                self.pos += 1
-                return doc.add(node^)
-            while True:
-                var child = self.parse_value(doc, depth + 1)
-                node.items.append(child)
+        if self.pos >= len(self.text) or self.text[self.pos] != 0x22:
+            raise self.fail("expected object key")
+        _ = self.parse_string()
+        self.skip_ws()
+        if self.pos >= len(self.text) or self.text[self.pos] != 0x3A:
+            raise self.fail("expected ':'")
+        self.pos += 1
+
+    def _read_key(mut self, mut f: _Frame) raises:
+        """The `"key":` of the next member of the object in `f`."""
+        self.skip_ws()
+        if self.pos >= len(self.text) or self.text[self.pos] != 0x22:
+            raise self.fail("expected object key")
+        var key = self.parse_string()
+        f.replace_at = -1
+        if key in f.seen:
+            if self.strict_keys:
+                raise Error(self.label + ": duplicate JSON member " + key)
+            f.replace_at = f.seen[key]
+        else:
+            f.seen[key] = len(f.node.keys)
+        f.key = key^
+        self.skip_ws()
+        if self.pos >= len(self.text) or self.text[self.pos] != 0x3A:
+            raise self.fail("expected ':'")
+        self.pos += 1
+
+    def parse_value(mut self, mut doc: Json, depth: Int) raises -> Int:
+        """One value, read with an explicit stack of open containers: the nesting depth costs heap,
+        not call stack, so `max_depth` can be far larger than a call stack allows."""
+        var stack = List[_Frame]()
+        var result = 0
+        var have = False  # `result` holds a finished value to attach to the open container
+        while True:
+            if not have:
+                if depth + len(stack) > self.max_depth:
+                    raise self.fail("nesting too deep")
                 self.skip_ws()
                 if self.pos >= len(self.text):
-                    raise self.fail("unterminated array")
-                if self.text[self.pos] == 0x2C:
+                    raise self.fail("unexpected end of input")
+                var c = self.text[self.pos]
+                if c == 0x7B or c == 0x5B:  # { or [
+                    var is_obj = c == 0x7B
                     self.pos += 1
+                    self.skip_ws()
+                    var closer: UInt8 = 0x7D if is_obj else 0x5D
+                    if self.pos < len(self.text) and self.text[self.pos] == closer:
+                        self.pos += 1
+                        result = doc.add(JsonNode(OBJECT if is_obj else ARRAY))
+                        have = True
+                        continue
+                    stack.append(_Frame(is_obj))
+                    if is_obj:
+                        self._read_key(stack[len(stack) - 1])
                     continue
-                if self.text[self.pos] == 0x5D:
+                if c == 0x22:
+                    var node = JsonNode(STRING)
+                    node.s = self.parse_string()
+                    result = doc.add(node^)
+                elif c == 0x74:
+                    self.expect_word("true")
+                    var node = JsonNode(BOOL)
+                    node.u = 1
+                    result = doc.add(node^)
+                elif c == 0x66:
+                    self.expect_word("false")
+                    result = doc.add(JsonNode(BOOL))
+                elif c == 0x6E:
+                    self.expect_word("null")
+                    result = doc.add(JsonNode(NULL))
+                elif c == 0x2D or (c >= 0x30 and c <= 0x39):
+                    result = self.parse_number(doc)
+                else:
+                    raise self.fail("unexpected character")
+                have = True
+            else:
+                if len(stack) == 0:
+                    return result
+                have = False
+                var top = len(stack) - 1
+                if stack[top].is_obj:
+                    if stack[top].replace_at >= 0:
+                        stack[top].node.items[stack[top].replace_at] = result
+                    else:
+                        stack[top].node.keys.append(stack[top].key.copy())
+                        stack[top].node.items.append(result)
+                else:
+                    stack[top].node.items.append(result)
+                self.skip_ws()
+                if self.pos >= len(self.text):
+                    raise self.fail("unterminated object" if stack[top].is_obj else "unterminated array")
+                var c = self.text[self.pos]
+                var closer: UInt8 = 0x7D if stack[top].is_obj else 0x5D
+                if c == 0x2C:
                     self.pos += 1
-                    break
-                raise self.fail("expected ',' or ']'")
-            return doc.add(node^)
-        if c == 0x22:
-            var node = JsonNode(STRING)
-            node.s = self.parse_string()
-            return doc.add(node^)
-        if c == 0x74:
-            self.expect_word("true")
-            var node = JsonNode(BOOL)
-            node.u = 1
-            return doc.add(node^)
-        if c == 0x66:
-            self.expect_word("false")
-            return doc.add(JsonNode(BOOL))
-        if c == 0x6E:
-            self.expect_word("null")
-            return doc.add(JsonNode(NULL))
-        if c == 0x2D or (c >= 0x30 and c <= 0x39):
-            return self.parse_number(doc)
-        raise self.fail("unexpected character")
+                    if stack[top].is_obj:
+                        self._read_key(stack[top])
+                elif c == closer:
+                    self.pos += 1
+                    var done = stack.pop()
+                    result = doc.add(done.take())
+                    have = True
+                else:
+                    raise self.fail("expected ',' or '}'" if stack[top].is_obj else "expected ',' or ']'")
+
+
+struct _Frame(Movable):
+    """An open container while it is being read."""
+
+    var node: JsonNode
+    var is_obj: Bool
+    var seen: Dict[String, Int]
+    var key: String
+    var replace_at: Int
+
+    def __init__(out self, is_obj: Bool):
+        self.node = JsonNode(OBJECT if is_obj else ARRAY)
+        self.is_obj = is_obj
+        self.seen = Dict[String, Int]()
+        self.key = String()
+        self.replace_at = -1
+
+    def take(mut self) -> JsonNode:
+        var out = self.node^
+        self.node = JsonNode(NULL)
+        return out^
 
 
 def _valid_utf8(b: List[UInt8]) -> Bool:
@@ -369,15 +473,26 @@ def _append_utf8(mut out: List[UInt8], cp: Int):
 
 
 def parse_json(
-    var text: List[UInt8], label: String, mut doc: Json, strict_keys: Bool = True
+    var text: List[UInt8], label: String, mut doc: Json, strict_keys: Bool = True, max_depth: Int = 512
 ) raises -> Int:
     """Parse `text` into `doc` and return the root node index.
 
     `strict_keys=False` keeps the last of a repeated member, as nlohmann does for
-    `Json::parse` (the artifact directory is the strict case)."""
-    var p = _Parser(text^, label, strict_keys)
+    `Json::parse` (the artifact directory is the strict case). `max_depth` bounds the nesting
+    ; the reader keeps its open containers on the heap, so a large bound is safe."""
+    var p = _Parser(text^, label, strict_keys, max_depth)
     var root = p.parse_value(doc, 0)
     p.skip_ws()
     if p.pos != len(p.text):
         raise p.fail("trailing characters")
     return root
+
+
+def json_accepts(var text: List[UInt8]) -> Bool:
+    """`nlohmann::json::accept`: `text` is exactly one JSON value, at any nesting depth."""
+    try:
+        var p = _Parser(text^, "value", False)
+        p.accept()
+        return True
+    except:
+        return False

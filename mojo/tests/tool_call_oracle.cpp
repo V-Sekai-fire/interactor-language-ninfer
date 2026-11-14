@@ -49,7 +49,10 @@ int main(int argc, char** argv) {
         try {
             auto contract = build_tool_call_output_contract(tools, f[1] == "1", unhex(f[2]));
             const std::size_t max_len = std::stoul(f[3]);
-            if (f[0] == "parse") {
+            if (f[0] == "format") {
+                if (!contract) { std::printf("disabled\n"); continue; }
+                std::printf("format %s\n", hex(structured_tool_call_format(*contract)).c_str());
+            } else if (f[0] == "parse") {
                 const std::string text = unhex(f[5]);
                 if (!contract) { std::printf("disabled\n"); continue; }
                 auto out = parse_qwen_tool_call_output(text, max_len, *contract);
