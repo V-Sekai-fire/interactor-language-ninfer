@@ -1,4 +1,4 @@
-"""Parity: the Mojo NimbleParsec port against dashbitco/nimble_parsec itself.
+"""Parity: the Mojo parser combinators (`ninfer.combinator`) against dashbitco/nimble_parsec itself.
 
 Random combinator trees are rendered twice: as Elixir `defparsec` modules compiled against
 the real library, and as specs the Mojo port builds. Every input must give the same result,
@@ -317,9 +317,9 @@ def run_both(tmp_path, nimble, cases):
     specs = tmp_path / "specs.jsonl"
     specs.write_text("\n".join(json.dumps(c) for c in cases) + "\n")
     ebin = nimble / "_build/prod/lib/nimble_parsec/ebin"
-    theirs = subprocess.run([ELIXIR, "-pa", str(ebin), str(HERE / "parsec_oracle.exs"), str(source), str(inputs)], capture_output=True, text=True)
+    theirs = subprocess.run([ELIXIR, "-pa", str(ebin), str(HERE / "nimble_parsec_oracle.exs"), str(source), str(inputs)], capture_output=True, text=True)
     assert theirs.returncode == 0, theirs.stderr[-3000:]
-    mine = subprocess.run([MOJO, "run", "-I", str(ROOT / "mojo"), str(HERE / "parsec_probe.mojo"), str(specs)], capture_output=True, text=True)
+    mine = subprocess.run([MOJO, "run", "-I", str(ROOT / "mojo"), str(HERE / "combinator_probe.mojo"), str(specs)], capture_output=True, text=True)
     assert mine.returncode == 0, mine.stderr[-3000:]
     return mine.stdout.strip().split("\n"), theirs.stdout.strip().split("\n")
 

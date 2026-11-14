@@ -1,4 +1,4 @@
-# Runs the generated NimbleParsec modules and prints results in the format of parsec_probe.mojo.
+# Runs the generated NimbleParsec modules and prints results in the format of combinator_probe.mojo.
 defmodule Helper do
   def count(rest, acc, context, _line, _offset), do: {rest, [length(acc)], context}
 end

@@ -1,14 +1,15 @@
-"""NimbleParsec for Mojo.
+"""Parser combinators for Mojo, in the style of dashbitco/nimble_parsec.
 
-A port of dashbitco/nimble_parsec's combinators and their semantics: combinators are composed at
-run time into a tree,
+This is not NimbleParsec. It borrows its combinator vocabulary and, in `parse` mode, its
+observable behaviour, which `tests/test_combinator.py` checks against the real library; `scan` and
+`uclass` below are this project's own. Combinators are composed at run time into a tree,
 errors report `{reason, rest, line, offset}` with NimbleParsec's reason text, and the parser
 backtracks exactly where the compiled clauses do (choice, repeat, times, lookahead).
 
 The Elixir original compiles combinators into binary-matching clauses; here a matcher walks the
 tree instead. What it keeps is the observable behaviour, including how consecutive "bound"
 combinators (strings, character classes, bytes, eos) fail together as one unit and report the
-start of that unit. `tests/test_parsec.py` runs both implementations on the same combinators.
+start of that unit. The test runs both implementations on the same combinators.
 Context is always the empty map and callbacks are the built-in operations below.
 """
 
@@ -35,7 +36,7 @@ comptime E_REPEAT = 7
 comptime E_TIMES = 8
 comptime E_EVENTUALLY = 9
 comptime E_LOOKAHEAD = 10
-comptime E_PARSEC = 11
+comptime E_CALL = 11  # run another parser by name (NimbleParsec's `parsec(:name)`)
 comptime E_UCLASS = 13  # one Unicode code point by category; only `scan` recognises it
 comptime E_SLICE = 12  # ascii_string / utf8_string with min/max whose class cannot match a newline
 
@@ -79,7 +80,7 @@ struct Term(Copyable, Movable):
 
 struct Elem(Copyable, Movable):
     var kind: Int
-    var s: String  # string / label / parsec name / tag atom
+    var s: String  # string / label / called parser name / tag atom
     var inc: List[Int]  # char ranges as lo,hi pairs
     var exc: List[Int]
     var utf8: Bool
@@ -196,7 +197,7 @@ def _hex(v: Int) -> String:
     return "{" + out + "}"
 
 
-struct Parsec(Movable):
+struct Parser(Movable):
     var terms: List[Term]
     var elems: List[Elem]
     var lists: List[List[Int]]  # a combinator is a list of element ids
@@ -397,8 +398,9 @@ struct Parsec(Movable):
         e.positive = False
         return self._one(e)
 
-    def parsec(mut self, name: String) -> Int:
-        var e = Elem(E_PARSEC)
+    def call(mut self, name: String) -> Int:
+        """Run the parser registered under `name` (NimbleParsec's `parsec(:name)`)."""
+        var e = Elem(E_CALL)
         e.s = name
         return self._one(e)
 
@@ -523,7 +525,7 @@ struct Parsec(Movable):
                     out += " or "
                 out += self._labels(self.lists[el.kids[k]])
             return out^
-        return el.s  # parsec name
+        return el.s  # called parser name
 
     def _labels(self, items: List[Int]) -> String:
         if len(items) == 0:
@@ -826,7 +828,7 @@ struct Parsec(Movable):
             st.line_off = inner.line_off
             self._apply_op(el, inner.acc, st)
             return True
-        if k == E_PARSEC:
+        if k == E_CALL:
             var none = List[String]()
             return self._run_list(self.lists[self.named[el.s]].copy(), st, none, input, fail)
         if k == E_CHOICE:
@@ -987,7 +989,7 @@ struct Parsec(Movable):
             return pos if pos == len(input) else -1
         if k == E_LABEL or k == E_TRAVERSE:
             return self._scan_list(self.lists[el.kids[0]], pos, input, unicode, context)
-        if k == E_PARSEC:
+        if k == E_CALL:
             return self._scan_list(self.lists[self.named[el.s]], pos, input, unicode, context)
         if k == E_CHOICE:
             for alt in el.kids:
@@ -1016,7 +1018,7 @@ struct Parsec(Movable):
         if k == E_LOOKAHEAD:
             var end = self._scan_list(self.lists[el.kids[0]], pos, input, unicode, context)
             return pos if (end >= 0) == el.positive else -1
-        raise Error("Parsec.scan does not support this combinator")
+        raise Error("Parser.scan does not support this combinator")
 
 
 def _newline_possible(inc: List[Int], exc: List[Int]) -> Bool:

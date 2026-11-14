@@ -42,7 +42,7 @@ reference in `tools/artifact`).
 
 ```
 mojo/ninfer/core/       weight.mojo (QType, QuantLayout, WeightGeometry)
-mojo/ninfer/parsec/       parsec.mojo (NimbleParsec combinators)
+mojo/ninfer/combinator/   combinator.mojo (parser combinators, NimbleParsec vocabulary)
 mojo/ninfer/text/jinja/ error.mojo (JinjaError), lexer.mojo
 mojo/ninfer/text/       unicode.mojo, unicode_tables.mojo (generated from utf8proc), tokenizer.mojo
 mojo/ninfer/artifact/   json framing schema reader formats layouts binder
