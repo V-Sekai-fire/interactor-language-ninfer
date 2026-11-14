@@ -14,6 +14,7 @@ from std.collections import List
 
 from ninfer.artifact.json import (
     Json,
+    NO_DEPTH_LIMIT,
     json_accepts,
     parse_json,
     ARRAY,
@@ -38,8 +39,8 @@ comptime R_UNDECLARED_TOOL = 4
 comptime R_TRAILING_CONTENT = 5
 
 
-# Real tool schemas nest a handful of levels. `Json::parse` has no bound, so a caller that must accept
-# anything it accepts passes a larger `max_depth` (the reader recurses; about 60,000 overflows the stack).
+# Real tool schemas nest a handful of levels. `Json::parse` has no bound: a caller that must accept
+# anything it accepts passes `max_depth=NO_DEPTH_LIMIT` (the reader keeps its stack on the heap).
 comptime DEFAULT_TOOL_JSON_MAX_DEPTH = 64
 
 
