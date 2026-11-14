@@ -6,6 +6,7 @@ which keeps the recursive tree flat and cheap to share with macros. The meaning 
 generic fields per kind is listed next to each constant.
 """
 
+from ninfer.text.jinja.error import JinjaError, jinja_error, parse_float, parse_int
 from std.collections import List
 
 from ninfer.text.jinja.lexer import (
@@ -212,9 +213,9 @@ struct _Parser(Movable):
             return 0
         return self.tokens[self.current + offset].pos
 
-    def next(mut self) raises -> Token:
+    def next(mut self) raises JinjaError -> Token:
         if self.current >= len(self.tokens):
-            raise Error(
+            raise jinja_error(
                 fmt_error_with_source(
                     "parser",
                     "Parser Error: Unexpected EOF",
@@ -226,9 +227,9 @@ struct _Parser(Movable):
         self.current += 1
         return t^
 
-    def expect(mut self, type: Int, error: String) raises:
+    def expect(mut self, type: Int, error: String) raises JinjaError:
         if self.peek_type() != type:
-            raise Error(
+            raise jinja_error(
                 fmt_error_with_source(
                     "parser",
                     "Parser Error: " + error + " (Got " + self.peek_value() + ")",
@@ -238,9 +239,9 @@ struct _Parser(Movable):
             )
         self.current += 1
 
-    def expect_identifier(mut self, name: String) raises:
+    def expect_identifier(mut self, name: String) raises JinjaError:
         if self.peek_type() != T_IDENTIFIER or self.peek_value() != name:
-            raise Error(
+            raise jinja_error(
                 fmt_error_with_source("parser", "Expected identifier: " + name, self.source, self.peek_pos())
             )
         self.current += 1
@@ -267,7 +268,7 @@ struct _Parser(Movable):
 
     # --- statements ------------------------------------------------------------------------
 
-    def parse_any(mut self) raises -> Int:
+    def parse_any(mut self) raises JinjaError -> Int:
         var start = self.current
         var t = self.peek_type()
         if t == T_COMMENT:
@@ -284,9 +285,9 @@ struct _Parser(Movable):
             return self.parse_jinja_statement()
         if t == T_OPEN_EXPRESSION:
             return self.parse_jinja_expression()
-        raise Error("Unexpected token type")
+        raise jinja_error("Unexpected token type")
 
-    def parse_jinja_expression(mut self) raises -> Int:
+    def parse_jinja_expression(mut self) raises JinjaError -> Int:
         var pos = self.current
         self.expect(T_OPEN_EXPRESSION, "Expected {{")
         var result = self.parse_expression()
@@ -295,21 +296,21 @@ struct _Parser(Movable):
         self.ast.nodes[n].a = result
         return n
 
-    def parse_body_until(mut self, names: List[String]) raises -> List[Int]:
+    def parse_body_until(mut self, names: List[String]) raises JinjaError -> List[Int]:
         var body = List[Int]()
         while not self.is_statement(names):
             body.append(self.parse_any())
         return body^
 
-    def expect_end(mut self, name: String) raises:
+    def expect_end(mut self, name: String) raises JinjaError:
         self.expect(T_OPEN_STATEMENT, "Expected {%")
         self.expect_identifier(name)
         self.expect(T_CLOSE_STATEMENT, "Expected %}")
 
-    def parse_jinja_statement(mut self) raises -> Int:
+    def parse_jinja_statement(mut self) raises JinjaError -> Int:
         self.expect(T_OPEN_STATEMENT, "Expected {%")
         if self.peek_type() != T_IDENTIFIER:
-            raise Error("Unknown statement")
+            raise jinja_error("Unknown statement")
         var start = self.current
         var name = self.next().value
         var result = -1
@@ -336,7 +337,7 @@ struct _Parser(Movable):
                 caller_args = self.parse_args()
             var callee = self.parse_primary_expression()
             if self.ast.nodes[callee].kind != N_IDENT:
-                raise Error("Expected identifier")
+                raise jinja_error("Expected identifier")
             var call_args = self.parse_args()
             self.expect(T_CLOSE_STATEMENT, "Expected %}")
             var names = List[String]()
@@ -366,10 +367,10 @@ struct _Parser(Movable):
             result = self.mk(start, N_NOOP)
             self.current += 1
         else:
-            raise Error("Unknown statement: " + name)
+            raise jinja_error("Unknown statement: " + name)
         return result
 
-    def parse_set_statement(mut self, start: Int) raises -> Int:
+    def parse_set_statement(mut self, start: Int) raises JinjaError -> Int:
         var left = self.parse_expression_sequence()
         var value = -1
         var body = List[Int]()
@@ -390,7 +391,7 @@ struct _Parser(Movable):
         self.ast.nodes[n].l1 = body^
         return n
 
-    def parse_if_statement(mut self, start: Int) raises -> Int:
+    def parse_if_statement(mut self, start: Int) raises JinjaError -> Int:
         var test = self.parse_expression()
         self.expect(T_CLOSE_STATEMENT, "Expected %}")
         var stops = List[String]()
@@ -416,7 +417,7 @@ struct _Parser(Movable):
         self.ast.nodes[n].l2 = alternate^
         return n
 
-    def parse_macro_statement(mut self, start: Int) raises -> Int:
+    def parse_macro_statement(mut self, start: Int) raises JinjaError -> Int:
         var name = self.parse_primary_expression()
         var args = self.parse_args()
         self.expect(T_CLOSE_STATEMENT, "Expected %}")
@@ -428,7 +429,7 @@ struct _Parser(Movable):
         self.ast.nodes[n].l2 = body^
         return n
 
-    def parse_expression_sequence(mut self, primary: Bool = False) raises -> Int:
+    def parse_expression_sequence(mut self, primary: Bool = False) raises JinjaError -> Int:
         var start = self.current
         var exprs = List[Int]()
         exprs.append(self.parse_primary_expression() if primary else self.parse_expression())
@@ -442,10 +443,10 @@ struct _Parser(Movable):
             return n
         return exprs[0]
 
-    def parse_for_statement(mut self, start: Int) raises -> Int:
+    def parse_for_statement(mut self, start: Int) raises JinjaError -> Int:
         var loop_var = self.parse_expression_sequence(True)
         if not self.is_identifier("in"):
-            raise Error("Expected 'in'")
+            raise jinja_error("Expected 'in'")
         self.current += 1
         var iterable = self.parse_expression()
         self.expect(T_CLOSE_STATEMENT, "Expected %}")
@@ -469,10 +470,10 @@ struct _Parser(Movable):
 
     # --- expressions -----------------------------------------------------------------------
 
-    def parse_expression(mut self) raises -> Int:
+    def parse_expression(mut self) raises JinjaError -> Int:
         return self.parse_if_expression()
 
-    def parse_if_expression(mut self) raises -> Int:
+    def parse_if_expression(mut self) raises JinjaError -> Int:
         var a = self.parse_logical_or_expression()
         if self.is_identifier("if"):
             var start = self.current
@@ -500,7 +501,7 @@ struct _Parser(Movable):
         self.ast.nodes[n].b = right
         return n
 
-    def parse_logical_or_expression(mut self) raises -> Int:
+    def parse_logical_or_expression(mut self) raises JinjaError -> Int:
         var left = self.parse_logical_and_expression()
         while self.is_identifier("or"):
             var start = self.current
@@ -509,7 +510,7 @@ struct _Parser(Movable):
             left = self.binary(start, op, left, right)
         return left
 
-    def parse_logical_and_expression(mut self) raises -> Int:
+    def parse_logical_and_expression(mut self) raises JinjaError -> Int:
         var left = self.parse_logical_negation_expression()
         while self.is_identifier("and"):
             var start = self.current
@@ -518,7 +519,7 @@ struct _Parser(Movable):
             left = self.binary(start, op, left, right)
         return left
 
-    def parse_logical_negation_expression(mut self) raises -> Int:
+    def parse_logical_negation_expression(mut self) raises JinjaError -> Int:
         if self.is_identifier("not"):
             var start = self.current
             var op = self.next().value
@@ -529,7 +530,7 @@ struct _Parser(Movable):
             return n
         return self.parse_comparison_expression()
 
-    def parse_comparison_expression(mut self) raises -> Int:
+    def parse_comparison_expression(mut self) raises JinjaError -> Int:
         var left = self.parse_additive_expression()
         while True:
             var op = String()
@@ -547,7 +548,7 @@ struct _Parser(Movable):
             left = self.binary(start, op, left, right)
         return left
 
-    def parse_additive_expression(mut self) raises -> Int:
+    def parse_additive_expression(mut self) raises JinjaError -> Int:
         var left = self.parse_multiplicative_expression()
         while self.is_(T_ADDITIVE):
             var start = self.current
@@ -556,7 +557,7 @@ struct _Parser(Movable):
             left = self.binary(start, op, left, right)
         return left
 
-    def parse_multiplicative_expression(mut self) raises -> Int:
+    def parse_multiplicative_expression(mut self) raises JinjaError -> Int:
         var left = self.parse_test_expression()
         while self.is_(T_MULTIPLICATIVE):
             var start = self.current
@@ -565,7 +566,7 @@ struct _Parser(Movable):
             left = self.binary(start, op, left, right)
         return left
 
-    def parse_test_expression(mut self) raises -> Int:
+    def parse_test_expression(mut self) raises JinjaError -> Int:
         var operand = self.parse_filter_expression()
         while self.is_identifier("is"):
             var start = self.current
@@ -584,7 +585,7 @@ struct _Parser(Movable):
             operand = n
         return operand
 
-    def parse_filter_expression(mut self) raises -> Int:
+    def parse_filter_expression(mut self) raises JinjaError -> Int:
         var operand = self.parse_call_member_expression()
         while self.is_(T_PIPE):
             var start = self.current
@@ -598,14 +599,14 @@ struct _Parser(Movable):
             operand = n
         return operand
 
-    def parse_call_member_expression(mut self) raises -> Int:
+    def parse_call_member_expression(mut self) raises JinjaError -> Int:
         var primary = self.parse_primary_expression()
         var member = self.parse_member_expression(primary)
         if self.is_(T_OPEN_PAREN):
             return self.parse_call_expression(member)
         return member
 
-    def parse_call_expression(mut self, callee: Int) raises -> Int:
+    def parse_call_expression(mut self, callee: Int) raises JinjaError -> Int:
         var start = self.current
         var args = self.parse_args()
         var expr = self.mk(start, N_CALL)
@@ -616,7 +617,7 @@ struct _Parser(Movable):
             return self.parse_call_expression(member)
         return member
 
-    def parse_args(mut self) raises -> List[Int]:
+    def parse_args(mut self) raises JinjaError -> List[Int]:
         self.expect(T_OPEN_PAREN, "Expected (")
         var args = List[Int]()
         while not self.is_(T_CLOSE_PAREN):
@@ -643,7 +644,7 @@ struct _Parser(Movable):
         self.expect(T_CLOSE_PAREN, "Expected )")
         return args^
 
-    def parse_member_expression(mut self, object: Int) raises -> Int:
+    def parse_member_expression(mut self, object: Int) raises JinjaError -> Int:
         var start = self.current
         var obj = object
         while self.is_(T_DOT) or self.is_(T_OPEN_SQUARE):
@@ -662,7 +663,7 @@ struct _Parser(Movable):
             obj = n
         return obj
 
-    def parse_member_expression_arguments(mut self) raises -> Int:
+    def parse_member_expression_arguments(mut self) raises JinjaError -> Int:
         var slices = List[Int]()
         var is_slice = False
         var start = self.current
@@ -686,16 +687,16 @@ struct _Parser(Movable):
             return self.mk(start, N_BLANK)
         return slices[0]
 
-    def parse_primary_expression(mut self) raises -> Int:
+    def parse_primary_expression(mut self) raises JinjaError -> Int:
         var start = self.current
         var t = self.next()
         if t.t == T_NUMERIC_LITERAL:
             if t.value.find(".") >= 0:
                 var n = self.mk(start, N_FLOAT)
-                self.ast.nodes[n].f = atof(t.value)
+                self.ast.nodes[n].f = parse_float(t.value)
                 return n
             var n = self.mk(start, N_INT)
-            self.ast.nodes[n].i = atol(t.value)
+            self.ast.nodes[n].i = parse_int(t.value)
             return n
         if t.t == T_STRING_LITERAL:
             var val = t.value
@@ -737,10 +738,10 @@ struct _Parser(Movable):
             self.ast.nodes[n].l1 = keys^
             self.ast.nodes[n].l2 = vals^
             return n
-        raise Error("Unexpected token: " + t.value + " of type " + String(t.t))
+        raise jinja_error("Unexpected token: " + t.value + " of type " + String(t.t))
 
 
-def parse_from_tokens(lexed: LexerResult) raises -> Ast:
+def parse_from_tokens(lexed: LexerResult) raises JinjaError -> Ast:
     var parser = _Parser(lexed.tokens.copy(), lexed.source.copy())
     while parser.current < len(parser.tokens):
         var stmt = parser.parse_any()

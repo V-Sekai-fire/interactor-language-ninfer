@@ -1,5 +1,6 @@
 """Jinja executor; mirrors `third_party/llama-jinja/jinja/runtime.{h,cpp}`."""
 
+from ninfer.text.jinja.error import JinjaError, jinja_error, K_ERROR, K_BREAK, K_CONTINUE, K_RETHROWN
 from std.collections import List
 
 from ninfer.text.jinja.jstring import JString, JU, characters, codepoint_length
@@ -22,15 +23,8 @@ from ninfer.text.jinja.builtins import (
     has_global, has_method, call_global, call_method, call_test, is_class, C_ARRAY, out_push,
 )
 
-comptime BREAK = "\x01break"
-comptime CONTINUE = "\x01continue"
 
 
-def clean_error(msg: String) -> String:
-    """Drop the marker byte that carries the C++ exception class."""
-    if msg.byte_length() > 0 and msg.as_bytes()[0] < 4:
-        return String(msg[byte=1:])
-    return msg
 
 
 def _get_line_col(source: List[UInt8], pos: Int) -> String:
@@ -59,7 +53,7 @@ struct Runtime(Movable):
 
     # --- context ---------------------------------------------------------------------------
 
-    def new_env(mut self) raises -> Int:
+    def new_env(mut self) raises JinjaError -> Int:
         var env = self.h.object()
         self.h.nodes[env].has_builtins = False
         obj_insert_str(self.h, env, "true", self.h.boolean(True))
@@ -77,29 +71,29 @@ struct Runtime(Movable):
         self.h.nodes[env].vals = self.h.nodes[parent].vals.copy()
         return env
 
-    def get_val(mut self, env: Int, name: String) raises -> Int:
+    def get_val(mut self, env: Int, name: String) raises JinjaError -> Int:
         var key = self.h.text(name)
         var dflt = self.h.undef(name)
         return obj_at(self.h, env, key, dflt)
 
-    def set_val(mut self, env: Int, name: String, v: Int) raises:
+    def set_val(mut self, env: Int, name: String, v: Int) raises JinjaError:
         obj_insert_str(self.h, env, name, v)
 
     # --- execution -------------------------------------------------------------------------
 
-    def execute_program(mut self, env: Int, time: Int) raises -> Int:
+    def execute_program(mut self, env: Int, time: Int) raises JinjaError -> Int:
         var results = self.h.array()
         for stmt in self.ast.body.copy():
             var res = self.execute(stmt, env, time)
             out_push(self.h, results, res)
         return self.gather(results)
 
-    def gather(mut self, v: Int) raises -> Int:
+    def gather(mut self, v: Int) raises JinjaError -> Int:
         var parts = JString()
         self._gather(v, parts)
         return self.h.string(parts^)
 
-    def _gather(mut self, v: Int, mut parts: JString) raises:
+    def _gather(mut self, v: Int, mut parts: JString) raises JinjaError:
         var k = self.h.nodes[v].kind
         if k == V_STRING:
             parts.append(self.h.nodes[v].s)
@@ -109,32 +103,32 @@ struct Runtime(Movable):
             for item in self.h.nodes[v].arr.copy():
                 self._gather(item, parts)
 
-    def exec_statements(mut self, stmts: List[Int], env: Int, time: Int) raises -> Int:
+    def exec_statements(mut self, stmts: List[Int], env: Int, time: Int) raises JinjaError -> Int:
         var result = self.h.array()
         for s in stmts:
             var r = self.execute(s, env, time)
             out_push(self.h, result, r)
         return self.gather(result)
 
-    def execute(mut self, node: Int, env: Int, time: Int) raises -> Int:
+    def execute(mut self, node: Int, env: Int, time: Int) raises JinjaError -> Int:
         try:
             return self.execute_impl(node, env, time)
         except e:
-            var msg = String(e)
-            if msg.byte_length() > 0 and msg.as_bytes()[0] < 4:
+            if e.kind != K_ERROR:
                 raise e^
+            var msg = e.message
             var n_pos = self.ast.nodes[node].pos
             var ty = type_name(self.ast.nodes[node].kind)
             if len(self.src) == 0:
-                raise Error(
-                    "\x02\nError executing " + ty + " at position " + String(n_pos) + ": " + msg
+                raise JinjaError(
+                    K_RETHROWN, "\nError executing " + ty + " at position " + String(n_pos) + ": " + msg
                 )
-            raise Error(
-                "\x02\n------------\nWhile executing " + ty + " at " + _get_line_col(self.src, n_pos)
+            raise JinjaError(
+                K_RETHROWN, "\n------------\nWhile executing " + ty + " at " + _get_line_col(self.src, n_pos)
                 + " in source:\n" + peak_source(self.src, n_pos) + "\nError: " + msg
             )
 
-    def execute_impl(mut self, node: Int, env: Int, time: Int) raises -> Int:
+    def execute_impl(mut self, node: Int, env: Int, time: Int) raises JinjaError -> Int:
         var n = self.ast.nodes[node].copy()
         var k = n.kind
         if k == N_STRING:
@@ -188,8 +182,8 @@ struct Runtime(Movable):
                     return self.h.integer(-as_int(self.h, operand))
                 if self.h.nodes[operand].kind == V_FLOAT:
                     return self.h.float(-as_float(self.h, operand))
-                raise Error("Unary - operator requires numeric operand")
-            raise Error("Unknown unary operator '" + n.s + "'")
+                raise jinja_error("Unary - operator requires numeric operand")
+            raise jinja_error("Unknown unary operator '" + n.s + "'")
         if k == N_IF:
             var test = self.execute(n.a, env, time)
             var out = self.h.array()
@@ -204,7 +198,7 @@ struct Runtime(Movable):
             return self.exec_set(n, env, time)
         if k == N_MACRO:
             if self.ast.nodes[n.a].kind != N_IDENT:
-                raise Error("Macro name must be an identifier")
+                raise jinja_error("Macro name must be an identifier")
             var name = self.ast.nodes[n.a].s
             var f = self.h.func(name, F_MACRO)
             self.h.nodes[f].node = node
@@ -222,11 +216,11 @@ struct Runtime(Movable):
                 args.push_back(v)
             var callee = self.execute(n.a, env, time)
             if self.h.nodes[callee].kind != V_FUNC:
-                raise Error("Callee is not a function: got " + vtype(self.h, callee))
+                raise jinja_error("Callee is not a function: got " + vtype(self.h, callee))
             return self.invoke(callee, args)
         if k == N_KWARG:
             if self.ast.nodes[n.a].kind != N_IDENT:
-                raise Error("Keyword argument key must be identifiers")
+                raise jinja_error("Keyword argument key must be identifiers")
             var key = self.ast.nodes[n.a].s
             var v = self.execute(n.b, env, time)
             return self.h.kwarg(key, v)
@@ -241,25 +235,25 @@ struct Runtime(Movable):
                 return self.h.undef()
             return self.execute_impl(n.a, env, time)
         if k == N_BREAK:
-            raise Error(BREAK)
+            raise JinjaError(K_BREAK, "")
         if k == N_CONTINUE:
-            raise Error(CONTINUE)
+            raise JinjaError(K_CONTINUE, "")
         if k == N_NOOP or k == N_COMMENT or k == N_BLANK:
             return self.h.undef()
         if k == N_SLICE:
-            raise Error("must be handled by MemberExpression")
-        raise Error("cannot exec " + type_name(k))
+            raise jinja_error("must be handled by MemberExpression")
+        raise jinja_error("cannot exec " + type_name(k))
 
     # --- binary ----------------------------------------------------------------------------
 
-    def is_in(mut self, left: Int, right: Int, env: Int, time: Int) raises -> Bool:
+    def is_in(mut self, left: Int, right: Int, env: Int, time: Int) raises JinjaError -> Bool:
         var a = FuncArgs(Ctx(env, time))
         a.push_back(left)
         a.push_back(right)
         var r = call_test(self.h, "in", a)
         return as_bool(self.h, r)
 
-    def exec_binary(mut self, n: Node, env: Int, time: Int) raises -> Int:
+    def exec_binary(mut self, n: Node, env: Int, time: Int) raises JinjaError -> Int:
         var op = n.s
         var left = self.execute(n.a, env, time)
         if op == "and":
@@ -284,12 +278,12 @@ struct Runtime(Movable):
         if lk == V_UNDEF or rk == V_UNDEF:
             if rk == V_UNDEF and (op == "in" or op == "not in"):
                 return self.h.boolean(op == "not in")
-            raise Error("Cannot perform operation " + op + " on undefined values")
+            raise jinja_error("Cannot perform operation " + op + " on undefined values")
         elif lk == V_NONE or rk == V_NONE:
             if rk != V_NONE and (op == "in" or op == "not in"):
                 var member = self.is_in(left, right, env, time)
                 return self.h.boolean(member if op == "in" else not member)
-            raise Error("Cannot perform operation on null values")
+            raise jinja_error("Cannot perform operation on null values")
         if (lk == V_INT or lk == V_FLOAT) and (rk == V_INT or rk == V_FLOAT):
             var a = self.h.nodes[left].f
             var b = self.h.nodes[right].f
@@ -355,19 +349,19 @@ struct Runtime(Movable):
                 return self.h.boolean(member)
             elif op == "not in":
                 return self.h.boolean(not member)
-        raise Error("Unknown operator \"" + op + "\" between " + vtype(self.h, left) + " and " + vtype(self.h, right))
+        raise jinja_error("Unknown operator \"" + op + "\" between " + vtype(self.h, left) + " and " + vtype(self.h, right))
 
     # --- filters and tests -----------------------------------------------------------------
 
-    def try_builtin_func(mut self, name: String, input: Int, undef_on_missing: Bool) raises -> Int:
+    def try_builtin_func(mut self, name: String, input: Int, undef_on_missing: Bool) raises JinjaError -> Int:
         if has_method(self.h, input, name):
             var f = self.h.func(name, F_METHOD, input)
             return f
         if undef_on_missing:
             return self.h.undef(name)
-        raise Error("Unknown (built-in) filter '" + name + "' for type " + vtype(self.h, input))
+        raise jinja_error("Unknown (built-in) filter '" + name + "' for type " + vtype(self.h, input))
 
-    def apply_filter(mut self, input_in: Int, filter: Int, env: Int, time: Int) raises -> Int:
+    def apply_filter(mut self, input_in: Int, filter: Int, env: Int, time: Int) raises JinjaError -> Int:
         var input = input_in
         var fnode = self.ast.nodes[filter].copy()
         if fnode.kind == N_IDENT:
@@ -383,7 +377,7 @@ struct Runtime(Movable):
             return self.invoke(f, FuncArgs(Ctx(env, time)))
         if fnode.kind == N_CALL:
             if self.ast.nodes[fnode.a].kind != N_IDENT:
-                raise Error("Filter callee must be an identifier")
+                raise jinja_error("Filter callee must be an identifier")
             var id = _alias(self.ast.nodes[fnode.a].s)
             var args = FuncArgs(Ctx(env, time))
             for arg in fnode.l1:
@@ -391,9 +385,9 @@ struct Runtime(Movable):
                 args.push_back(v)
             var f = self.try_builtin_func(id, input, False)
             return self.invoke(f, args)
-        raise Error("Invalid filter expression")
+        raise jinja_error("Invalid filter expression")
 
-    def exec_test(mut self, n: Node, env: Int, time: Int) raises -> Int:
+    def exec_test(mut self, n: Node, env: Int, time: Int) raises JinjaError -> Int:
         var input = self.execute(n.a, env, time)
         var args = FuncArgs(Ctx(env, time))
         args.push_back(input)
@@ -403,15 +397,15 @@ struct Runtime(Movable):
             test_id = tn.s
         elif tn.kind == N_CALL:
             if self.ast.nodes[tn.a].kind != N_IDENT:
-                raise Error("Test callee must be an identifier")
+                raise jinja_error("Test callee must be an identifier")
             test_id = self.ast.nodes[tn.a].s
             for arg in tn.l1:
                 var v = self.execute(arg, env, time)
                 args.push_back(v)
         else:
-            raise Error("Invalid test expression")
+            raise jinja_error("Invalid test expression")
         if not has_global("test_is_" + test_id):
-            raise Error("Unknown test '" + test_id + "'")
+            raise jinja_error("Unknown test '" + test_id + "'")
         args.func_name = "test_is_" + test_id
         var res = call_test(self.h, test_id, args)
         if n.flag:
@@ -420,7 +414,7 @@ struct Runtime(Movable):
 
     # --- invocation ------------------------------------------------------------------------
 
-    def invoke(mut self, f: Int, args_in: FuncArgs) raises -> Int:
+    def invoke(mut self, f: Int, args_in: FuncArgs) raises JinjaError -> Int:
         var fk = self.h.nodes[f].fkind
         var name = self.h.nodes[f].name
         var args = args_in.copy()
@@ -434,9 +428,9 @@ struct Runtime(Movable):
             return self.invoke_macro(f, args)
         if fk == F_CALLER:
             return self.invoke_caller(f, args)
-        raise Error("Function is not callable")
+        raise jinja_error("Function is not callable")
 
-    def bind_parameters(mut self, name: String, params: List[Int], args: FuncArgs, env: Int) raises:
+    def bind_parameters(mut self, name: String, params: List[Int], args: FuncArgs, env: Int) raises JinjaError:
         var positional = List[Int]()
         var named_keys = List[String]()
         var named_vals = List[Int]()
@@ -445,19 +439,19 @@ struct Runtime(Movable):
                 var key = self.h.nodes[input].name
                 for k in named_keys:
                     if k == key:
-                        raise Error("duplicate macro argument: " + key)
+                        raise jinja_error("duplicate macro argument: " + key)
                 named_keys.append(key)
                 named_vals.append(self.h.nodes[input].kwval)
             else:
                 positional.append(input)
         if len(positional) > len(params):
-            raise Error("too many arguments to macro " + name)
+            raise jinja_error("too many arguments to macro " + name)
         for i in range(len(params)):
             var p = self.ast.nodes[params[i]].copy()
             var plain = p.kind == N_IDENT
             var with_default = p.kind == N_KWARG
             if not plain and (not with_default or self.ast.nodes[p.a].kind != N_IDENT):
-                raise Error("invalid parameter in macro " + name)
+                raise jinja_error("invalid parameter in macro " + name)
             var key = p.s if plain else self.ast.nodes[p.a].s
             var input = -1
             var found = -1
@@ -467,7 +461,7 @@ struct Runtime(Movable):
                     break
             if found >= 0:
                 if i < len(positional):
-                    raise Error("duplicate macro argument: " + key)
+                    raise jinja_error("duplicate macro argument: " + key)
                 input = named_vals[found]
                 _ = named_keys.pop(found)
                 _ = named_vals.pop(found)
@@ -483,9 +477,9 @@ struct Runtime(Movable):
             for k in named_keys:
                 if k < first:
                     first = k
-            raise Error("unknown macro argument: " + first)
+            raise jinja_error("unknown macro argument: " + first)
 
-    def invoke_macro(mut self, f: Int, args: FuncArgs) raises -> Int:
+    def invoke_macro(mut self, f: Int, args: FuncArgs) raises JinjaError -> Int:
         var macro_node = self.ast.nodes[self.h.nodes[f].node].copy()
         var env = self.copy_env(self.h.nodes[f].scope)
         var caller = self.get_val(args.ctx.env, "caller")
@@ -495,19 +489,19 @@ struct Runtime(Movable):
         self.bind_parameters(macro_name, macro_node.l1, args, env)
         return self.exec_statements(macro_node.l2, env, args.ctx.time)
 
-    def invoke_caller(mut self, f: Int, args: FuncArgs) raises -> Int:
+    def invoke_caller(mut self, f: Int, args: FuncArgs) raises JinjaError -> Int:
         var call_node = self.ast.nodes[self.h.nodes[f].node].copy()
         var env = self.copy_env(self.h.nodes[f].scope)
         self.bind_parameters("caller", call_node.l1, args, env)
         return self.exec_statements(call_node.l2, env, args.ctx.time)
 
-    def exec_call_stmt(mut self, node: Int, n: Node, env: Int, time: Int) raises -> Int:
+    def exec_call_stmt(mut self, node: Int, n: Node, env: Int, time: Int) raises JinjaError -> Int:
         var call = self.ast.nodes[n.a].copy()
         if self.ast.nodes[n.a].kind != N_CALL:
-            raise Error("Call statement requires a valid call expression")
+            raise jinja_error("Call statement requires a valid call expression")
         var callee = self.execute(call.a, env, time)
         if self.h.nodes[callee].kind != V_FUNC:
-            raise Error("Callee is not a function: got " + vtype(self.h, callee))
+            raise jinja_error("Callee is not a function: got " + vtype(self.h, callee))
         var call_env = self.copy_env(env)
         var caller = self.h.func("caller", F_CALLER)
         self.h.nodes[caller].node = node
@@ -521,7 +515,7 @@ struct Runtime(Movable):
 
     # --- statements -------------------------------------------------------------------------
 
-    def exec_set(mut self, n: Node, env: Int, time: Int) raises -> Int:
+    def exec_set(mut self, n: Node, env: Int, time: Int) raises JinjaError -> Int:
         var rhs = -1
         if n.b >= 0:
             rhs = self.execute(n.b, env, time)
@@ -533,30 +527,30 @@ struct Runtime(Movable):
         elif assignee.kind == N_TUPLE:
             var rk = self.h.nodes[rhs].kind
             if rk != V_ARRAY and rk != V_TUPLE:
-                raise Error("Cannot unpack non-iterable type in set: " + vtype(self.h, rhs))
+                raise jinja_error("Cannot unpack non-iterable type in set: " + vtype(self.h, rhs))
             var arr = self.h.nodes[rhs].arr.copy()
             if len(arr) != len(assignee.l1):
-                raise Error("Too " + ("few" if len(assignee.l1) > len(arr) else "many") + " items to unpack in set")
+                raise jinja_error("Too " + ("few" if len(assignee.l1) > len(arr) else "many") + " items to unpack in set")
             for i in range(len(assignee.l1)):
                 var elem = self.ast.nodes[assignee.l1[i]].copy()
                 if elem.kind != N_IDENT:
-                    raise Error("Cannot unpack to non-identifier in set: " + type_name(elem.kind))
+                    raise jinja_error("Cannot unpack to non-identifier in set: " + type_name(elem.kind))
                 self.set_val(env, elem.s, arr[i])
         elif assignee.kind == N_MEMBER:
             if assignee.flag:
-                raise Error("Cannot assign to computed member")
+                raise jinja_error("Cannot assign to computed member")
             if self.ast.nodes[assignee.b].kind != N_IDENT:
-                raise Error("Cannot assign to member with non-identifier property")
+                raise jinja_error("Cannot assign to member with non-identifier property")
             var prop = self.ast.nodes[assignee.b].s
             var object = self.execute(assignee.a, env, time)
             if self.h.nodes[object].kind != V_OBJECT:
-                raise Error("Cannot assign to member of non-object")
+                raise jinja_error("Cannot assign to member of non-object")
             obj_insert_str(self.h, object, prop, rhs)
         else:
-            raise Error("Invalid LHS inside assignment expression: " + type_name(assignee.kind))
+            raise jinja_error("Invalid LHS inside assignment expression: " + type_name(assignee.kind))
         return self.h.undef()
 
-    def exec_for(mut self, n: Node, env: Int, time: Int) raises -> Int:
+    def exec_for(mut self, n: Node, env: Int, time: Int) raises JinjaError -> Int:
         var scope = self.copy_env(env)
         var iter_node = n.b
         var test_node = -1
@@ -569,7 +563,7 @@ struct Runtime(Movable):
             iterable = self.h.array()
         var ik = self.h.nodes[iterable].kind
         if not (ik == V_ARRAY or ik == V_TUPLE or ik == V_OBJECT or ik == V_STRING):
-            raise Error("Expected iterable or object type in for loop: got " + vtype(self.h, iterable))
+            raise jinja_error("Expected iterable or object type in for loop: got " + vtype(self.h, iterable))
         var items = List[Int]()
         if ik == V_OBJECT:
             var keys = self.h.nodes[iterable].keys.copy()
@@ -598,12 +592,12 @@ struct Runtime(Movable):
             elif loopvar.kind == N_TUPLE:
                 var ck = self.h.nodes[current].kind
                 if ck != V_ARRAY and ck != V_TUPLE:
-                    raise Error("Cannot unpack non-iterable type: " + vtype(self.h, current))
+                    raise jinja_error("Cannot unpack non-iterable type: " + vtype(self.h, current))
                 var c_arr = self.h.nodes[current].arr.copy()
                 if len(loopvar.l1) != len(c_arr):
-                    raise Error("Too " + ("few" if len(loopvar.l1) > len(c_arr) else "many") + " items to unpack")
+                    raise jinja_error("Too " + ("few" if len(loopvar.l1) > len(c_arr) else "many") + " items to unpack")
             else:
-                raise Error("Invalid loop variable(s): " + type_name(loopvar.kind))
+                raise jinja_error("Invalid loop variable(s): " + type_name(loopvar.kind))
             if is_select and test_node >= 0:
                 self.apply_loop_vars(loopvar, items[i], ik, loop_scope)
                 var tv = self.execute(test_node, loop_scope, time)
@@ -636,11 +630,10 @@ struct Runtime(Movable):
                     var val = self.execute(stmt, scope, time)
                     out_push(self.h, result, val)
                 except e:
-                    var msg = String(e)
-                    if msg == CONTINUE:
+                    if e.kind == K_CONTINUE:
                         skipped = True
                         break
-                    if msg == BREAK:
+                    if e.kind == K_BREAK:
                         stopped = True
                         break
                     raise e^
@@ -655,7 +648,7 @@ struct Runtime(Movable):
                 out_push(self.h, result, val)
         return self.gather(result)
 
-    def apply_loop_vars(mut self, loopvar: Node, item: Int, iterable_kind: Int, scope: Int) raises:
+    def apply_loop_vars(mut self, loopvar: Node, item: Int, iterable_kind: Int, scope: Int) raises JinjaError:
         if loopvar.kind == N_IDENT:
             if iterable_kind == V_OBJECT:
                 self.set_val(scope, loopvar.s, self.h.nodes[item].arr[0])
@@ -666,12 +659,12 @@ struct Runtime(Movable):
             for j in range(len(loopvar.l1)):
                 var el = self.ast.nodes[loopvar.l1[j]].copy()
                 if el.kind != N_IDENT:
-                    raise Error("Cannot unpack non-identifier type: " + type_name(el.kind))
+                    raise jinja_error("Cannot unpack non-identifier type: " + type_name(el.kind))
                 self.set_val(scope, el.s, c_arr[j])
 
     # --- member access ----------------------------------------------------------------------
 
-    def exec_member(mut self, n: Node, env: Int, time: Int) raises -> Int:
+    def exec_member(mut self, n: Node, env: Int, time: Int) raises JinjaError -> Int:
         var object = self.execute(n.a, env, time)
         var property = -1
         var pn = self.ast.nodes[n.b].copy()
@@ -690,10 +683,10 @@ struct Runtime(Movable):
         elif pn.kind == N_INT:
             property = self.h.integer(pn.i)
             if pn.i < 0:
-                raise Error("Static member property cannot be negative")
+                raise jinja_error("Static member property cannot be negative")
         else:
             if pn.kind != N_IDENT:
-                raise Error("Static member property must be an identifier")
+                raise jinja_error("Static member property must be an identifier")
             property = self.h.text(pn.s)
             var v = self.try_builtin_func(pn.s, object, True)
             if self.h.nodes[v].kind != V_UNDEF:
@@ -702,7 +695,7 @@ struct Runtime(Movable):
         if self.h.nodes[property].kind == V_UNDEF:
             return val
         if not is_hashable(self.h, property):
-            raise Error("Type: " + vtype(self.h, property) + " is not allowed as object key")
+            raise jinja_error("Type: " + vtype(self.h, property) + " is not allowed as object key")
         var ok = self.h.nodes[object].kind
         if ok == V_UNDEF:
             return val
@@ -732,10 +725,10 @@ struct Runtime(Movable):
                 var key = self.h.nodes[property].s.str()
                 val = self.try_builtin_func(key, object, True)
             else:
-                raise Error("Cannot access property with non-string/non-number: got " + vtype(self.h, property))
+                raise jinja_error("Cannot access property with non-string/non-number: got " + vtype(self.h, property))
         else:
             if self.h.nodes[property].kind != V_STRING:
-                raise Error("Cannot access property with non-string: got " + vtype(self.h, property))
+                raise jinja_error("Cannot access property with non-string: got " + vtype(self.h, property))
             var key = self.h.nodes[property].s.str()
             val = self.try_builtin_func(key, object, True)
         return val

@@ -8,7 +8,7 @@ from ninfer.artifact.json import (
 from ninfer.text.jinja.jstring import JString, string_bytes
 from ninfer.text.jinja.lexer import tokenize
 from ninfer.text.jinja.parser import Ast, parse_from_tokens
-from ninfer.text.jinja.runtime import Runtime, clean_error
+from ninfer.text.jinja.runtime import Runtime
 from ninfer.text.jinja.value import Heap, V_STRING, obj_insert, obj_insert_str
 from ninfer.text.unicode import utf8_codepoints
 
@@ -69,7 +69,7 @@ struct JinjaTemplate(Movable):
             self.source = lexed.source.copy()
             self.ast = parse_from_tokens(lexed)
         except e:
-            raise Error(source_name + ": " + clean_error(String(e)))
+            raise Error(source_name + ": " + String(e))
 
     def render(
         self,
@@ -84,7 +84,7 @@ struct JinjaTemplate(Movable):
         try:
             return self._render(doc, root, regions, control_variables, timestamp)
         except e:
-            raise Error(self.source_name + ": " + clean_error(String(e)))
+            raise Error(self.source_name + ": " + String(e))
 
     def _render(
         self,

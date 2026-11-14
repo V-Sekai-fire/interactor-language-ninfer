@@ -4,13 +4,14 @@ Values live in a `Heap` and are addressed by index, which gives the shared, muta
 Jinja needs (`namespace()` attributes, `list.append`) without reference counting. A render
 owns one heap; nothing is freed until it ends, the same lifetime a C++ render gives them.
 
-Exceptions: Mojo has one error type, so the C++ exception classes are encoded as a marker
-byte at the start of the message. `_BREAK` and `_CONTINUE` are loop control, `_RETHROWN` is a
-message that already carries its source context, `_NOTIMPL` is a NotImplemented error that
-`execute` must not decorate. A message without a marker is an ordinary `std::exception` and
-gets decorated by the nearest `execute`, exactly as in C++.
+Exceptions: every function here raises `JinjaError` (error.mojo), whose `kind` stands for the
+C++ exception class. `K_BREAK` and `K_CONTINUE` are loop control, `K_RETHROWN` is a message that
+already carries its source context, `K_NOTIMPL` is a NotImplemented error that `execute` must
+not decorate. A `K_ERROR` is an ordinary `std::exception` and gets decorated by the nearest
+`execute`, exactly as in C++.
 """
 
+from ninfer.text.jinja.error import JinjaError, codepoints, jinja_error, parse_int, K_NOTIMPL
 from std.collections import Dict, List, Optional
 
 from ninfer.text.jinja.jstring import (
@@ -35,10 +36,6 @@ from ninfer.text.jinja.parser import (
     N_TERNARY,
 )
 
-comptime _BREAK = "\x01break"
-comptime _CONTINUE = "\x01continue"
-comptime _RETHROWN = "\x02"
-comptime _NOTIMPL = "\x03"
 
 comptime V_NONE = 0
 comptime V_UNDEF = 1
@@ -227,8 +224,8 @@ def vtype(h: Heap, v: Int) -> String:
     return "KwArg"
 
 
-def type_error(h: Heap, v: Int, what: String) -> Error:
-    return Error(vtype(h, v) + " " + what)
+def type_error(h: Heap, v: Int, what: String) -> JinjaError:
+    return jinja_error(vtype(h, v) + " " + what)
 
 
 def is_immutable(h: Heap, v: Int) -> Bool:
@@ -294,7 +291,7 @@ def equivalent(h: Heap, a: Int, b: Int) -> Bool:
 # --- numbers to text -------------------------------------------------------------------------
 
 
-def format_float(f: Float64) raises -> String:
+def format_float(f: Float64) raises JinjaError -> String:
     """nlohmann::json(double).dump(): shortest round-trip digits, its own layout rules."""
     if f == 0.0:
         # sign of zero
@@ -311,7 +308,7 @@ def format_float(f: Float64) raises -> String:
     var epos = text.find("e")
     if epos >= 0:
         mantissa = String(text[byte=0:epos])
-        exp10 = atol(String(text[byte = epos + 1 :]))
+        exp10 = parse_int(String(text[byte = epos + 1 :]))
     var digits = String()
     var point = mantissa.find(".")
     var int_part = mantissa if point < 0 else String(mantissa[byte=0:point])
@@ -347,7 +344,7 @@ def format_float(f: Float64) raises -> String:
     return ("-" + out) if negative else out
 
 
-def float_to_string(f: Float64) raises -> String:
+def float_to_string(f: Float64) raises JinjaError -> String:
     if _is_nan(f):
         return "nan"
     if not _is_finite(f):
@@ -358,7 +355,7 @@ def float_to_string(f: Float64) raises -> String:
 # --- JSON string escaping (nlohmann::json(string).dump(-1, ' ', ensure_ascii)) ---------------
 
 
-def json_escape(s: String, ensure_ascii: Bool) raises -> String:
+def json_escape(s: String, ensure_ascii: Bool) raises JinjaError -> String:
     var out = String()
     var bytes = string_bytes(s)
     var spans = utf8_spans(bytes)
@@ -404,14 +401,14 @@ def _hex4(v: Int) -> String:
 from ninfer.text.unicode import utf8_codepoints, CodepointSpan
 
 
-def utf8_spans(bytes: List[UInt8]) raises -> List[CodepointSpan]:
-    return utf8_codepoints(bytes, "Jinja string")
+def utf8_spans(bytes: List[UInt8]) raises JinjaError -> List[CodepointSpan]:
+    return codepoints(bytes, "Jinja string")
 
 
 # --- as_string / as_bool / repr --------------------------------------------------------------
 
 
-def as_string(mut h: Heap, v: Int) raises -> JString:
+def as_string(mut h: Heap, v: Int) raises JinjaError -> JString:
     var k = h.nodes[v].kind
     if k == V_STRING:
         return h.nodes[v].s.copy()
@@ -450,7 +447,7 @@ def as_string(mut h: Heap, v: Int) raises -> JString:
     raise type_error(h, v, "is not a string value")
 
 
-def as_repr(mut h: Heap, v: Int) raises -> String:
+def as_repr(mut h: Heap, v: Int) raises JinjaError -> String:
     var k = h.nodes[v].kind
     if k == V_NONE:
         return "None"
@@ -464,7 +461,7 @@ def as_repr(mut h: Heap, v: Int) raises -> String:
     return as_string(h, v).str()
 
 
-def to_string_repr(mut h: Heap, v: Int) raises -> String:
+def to_string_repr(mut h: Heap, v: Int) raises JinjaError -> String:
     if h.nodes[v].kind == V_STRING:
         var s = h.nodes[v].s.str()
         if s.find("'") >= 0:
@@ -473,7 +470,7 @@ def to_string_repr(mut h: Heap, v: Int) raises -> String:
     return as_repr(h, v)
 
 
-def as_bool(mut h: Heap, v: Int) raises -> Bool:
+def as_bool(mut h: Heap, v: Int) raises JinjaError -> Bool:
     var k = h.nodes[v].kind
     if k == V_INT or k == V_BOOL:
         return h.nodes[v].i != 0
@@ -490,28 +487,28 @@ def as_bool(mut h: Heap, v: Int) raises -> Bool:
     raise type_error(h, v, "is not a bool value")
 
 
-def as_int(h: Heap, v: Int) raises -> Int:
+def as_int(h: Heap, v: Int) raises JinjaError -> Int:
     var k = h.nodes[v].kind
     if k == V_INT or k == V_FLOAT or k == V_BOOL:
         return h.nodes[v].i
     raise type_error(h, v, "is not an int value")
 
 
-def as_float(h: Heap, v: Int) raises -> Float64:
+def as_float(h: Heap, v: Int) raises JinjaError -> Float64:
     var k = h.nodes[v].kind
     if k == V_INT or k == V_FLOAT or k == V_BOOL:
         return h.nodes[v].f
     raise type_error(h, v, "is not a float value")
 
 
-def as_array(h: Heap, v: Int) raises -> List[Int]:
+def as_array(h: Heap, v: Int) raises JinjaError -> List[Int]:
     var k = h.nodes[v].kind
     if k == V_ARRAY or k == V_TUPLE:
         return h.nodes[v].arr.copy()
     raise type_error(h, v, "is not an array value")
 
 
-def as_ordered_object_check(h: Heap, v: Int) raises:
+def as_ordered_object_check(h: Heap, v: Int) raises JinjaError:
     if h.nodes[v].kind != V_OBJECT:
         raise type_error(h, v, "is not an object value")
 
@@ -519,10 +516,10 @@ def as_ordered_object_check(h: Heap, v: Int) raises:
 # --- objects ----------------------------------------------------------------------------------
 
 
-def obj_find(h: Heap, obj: Int, key: Int) raises -> Int:
+def obj_find(h: Heap, obj: Int, key: Int) raises JinjaError -> Int:
     """Index of `key` in the object, or -1; raises for an unhashable key like has_key."""
     if not is_immutable(h, key) or not is_hashable(h, key):
-        raise Error("Object key of unhashable type: " + vtype(h, key))
+        raise jinja_error("Object key of unhashable type: " + vtype(h, key))
     var keys = h.nodes[obj].keys.copy()
     for i in range(len(keys)):
         if equivalent(h, keys[i], key):
@@ -530,7 +527,7 @@ def obj_find(h: Heap, obj: Int, key: Int) raises -> Int:
     return -1
 
 
-def obj_insert(mut h: Heap, obj: Int, key: Int, val: Int) raises:
+def obj_insert(mut h: Heap, obj: Int, key: Int, val: Int) raises JinjaError:
     if h.nodes[obj].kind != V_OBJECT:
         raise type_error(h, obj, "is not an object value")
     var at = obj_find(h, obj, key)
@@ -541,22 +538,22 @@ def obj_insert(mut h: Heap, obj: Int, key: Int, val: Int) raises:
     h.nodes[obj].vals.append(val)
 
 
-def obj_insert_str(mut h: Heap, obj: Int, key: String, val: Int) raises:
+def obj_insert_str(mut h: Heap, obj: Int, key: String, val: Int) raises JinjaError:
     var k = h.text(key)
     obj_insert(h, obj, k, val)
 
 
-def obj_at(mut h: Heap, obj: Int, key: Int, default: Int) raises -> Int:
+def obj_at(mut h: Heap, obj: Int, key: Int, default: Int) raises JinjaError -> Int:
     var at = obj_find(h, obj, key)
     if at < 0:
         return default
     return h.nodes[obj].vals[at]
 
 
-def obj_at_strict(mut h: Heap, obj: Int, key: Int) raises -> Int:
+def obj_at_strict(mut h: Heap, obj: Int, key: Int) raises JinjaError -> Int:
     var at = obj_find(h, obj, key)
     if at < 0:
-        raise Error("Key '" + as_string(h, key).str() + "' not found in value of type " + vtype(h, obj))
+        raise jinja_error("Key '" + as_string(h, key).str() + "' not found in value of type " + vtype(h, obj))
     return h.nodes[obj].vals[at]
 
 
@@ -569,11 +566,11 @@ comptime OP_LT = 3
 comptime OP_NE = 4
 
 
-def raised(msg: String) -> Error:
-    return Error(msg)
+def raised(msg: String) -> JinjaError:
+    return jinja_error(msg)
 
 
-def value_compare(mut h: Heap, a: Int, b: Int, op: Int) raises -> Bool:
+def value_compare(mut h: Heap, a: Int, b: Int, op: Int) raises JinjaError -> Bool:
     if op == OP_EQ:
         return equivalent(h, a, b)
     if op == OP_NE:
@@ -597,7 +594,7 @@ def value_compare(mut h: Heap, a: Int, b: Int, op: Int) raises -> Bool:
         if op == OP_GT:
             return c > 0
         return c < 0
-    raise Error("Cannot order " + vtype(h, a) + " and " + vtype(h, b))
+    raise jinja_error("Cannot order " + vtype(h, a) + " and " + vtype(h, b))
 
 
 def _compare_bytes(x: String, y: String) -> Int:
@@ -623,7 +620,7 @@ def value_to_json(
     key_sep: String = ": ",
     ensure_ascii: Bool = False,
     sort_keys: Bool = False,
-) raises -> String:
+) raises JinjaError -> String:
     var out = String()
     var ancestors = List[Int]()
     _write_json(h, out, v, 0, indent, item_sep, key_sep, ensure_ascii, sort_keys, ancestors)
@@ -641,7 +638,7 @@ def _write_json(
     ensure_ascii: Bool,
     sort_keys: Bool,
     mut ancestors: List[Int],
-) raises:
+) raises JinjaError:
     var k = h.nodes[v].kind
     if k == V_NONE:
         out += "null"
@@ -662,7 +659,7 @@ def _write_json(
     elif k == V_ARRAY or k == V_TUPLE or k == V_OBJECT:
         for a in ancestors:
             if a == v:
-                raise Error("Circular value cannot be serialized to JSON")
+                raise jinja_error("Circular value cannot be serialized to JSON")
         ancestors.append(v)
         var is_obj = k == V_OBJECT
         var keys = h.nodes[v].keys.copy()
@@ -700,7 +697,7 @@ def _write_json(
                 elif is_numeric_kind(kk):
                     name = as_string(h, key).str()
                 else:
-                    raise Error("Invalid JSON object key: " + vtype(h, key))
+                    raise jinja_error("Invalid JSON object key: " + vtype(h, key))
                 out += json_escape(name, ensure_ascii) + key_sep
             _write_json(h, out, vals[i] if is_obj else items[i], level + 1, indent, item_sep, key_sep, ensure_ascii, sort_keys, ancestors)
         if size > 0 and indent >= 0:
@@ -708,7 +705,7 @@ def _write_json(
         out += "}" if is_obj else "]"
         _ = ancestors.pop()
     else:
-        raise Error("Cannot serialize " + vtype(h, v) + " to JSON")
+        raise jinja_error("Cannot serialize " + vtype(h, v) + " to JSON")
 
 
 # --- function arguments -----------------------------------------------------------------------
@@ -744,10 +741,10 @@ struct FuncArgs(Copyable, Movable):
     def push_front(mut self, v: Int):
         self.args.insert(0, v)
 
-    def get_pos(self, pos: Int) raises -> Int:
+    def get_pos(self, pos: Int) raises JinjaError -> Int:
         if len(self.args) > pos:
             return self.args[pos]
-        raise Error(
+        raise jinja_error(
             "Function '" + self.func_name + "' expected at least " + String(pos + 1)
             + " arguments, got " + String(len(self.args))
         )
@@ -769,26 +766,26 @@ struct FuncArgs(Copyable, Movable):
             return self.args[pos]
         return val
 
-    def ensure_count(self, min_count: Int, max_count: Int = 999) raises:
+    def ensure_count(self, min_count: Int, max_count: Int = 999) raises JinjaError:
         var n = len(self.args)
         if n < min_count or n > max_count:
-            raise Error(
+            raise jinja_error(
                 "Function '" + self.func_name + "' expected between " + String(min_count)
                 + " and " + String(max_count) + " arguments, got " + String(n)
             )
 
-    def ensure_kind(self, h: Heap, v: Int, kinds: List[Int], type_label: String) raises:
+    def ensure_kind(self, h: Heap, v: Int, kinds: List[Int], type_label: String) raises JinjaError:
         for k in kinds:
             if h.nodes[v].kind == k:
                 return
-        raise Error(
+        raise jinja_error(
             "Function '" + self.func_name + "' expected value of type " + type_label
             + ", got " + vtype(h, v)
         )
 
     def ensure_vals(
         self, h: Heap, labels: List[String], kinds: List[List[Int]], required: List[Bool]
-    ) raises:
+    ) raises JinjaError:
         var need = 0
         for r in required:
             if r:
@@ -806,41 +803,41 @@ def _kinds(*ks: Int) -> List[Int]:
     return out^
 
 
-def require_string(h: Heap, a: FuncArgs) raises:
+def require_string(h: Heap, a: FuncArgs) raises JinjaError:
     a.ensure_count(1)
     if len(a.args) > 0:
         a.ensure_kind(h, a.args[0], _kinds(V_STRING), "value_string_t")
 
 
-def require_array(h: Heap, a: FuncArgs) raises:
+def require_array(h: Heap, a: FuncArgs) raises JinjaError:
     a.ensure_count(1)
     if len(a.args) > 0:
         a.ensure_kind(h, a.args[0], _kinds(V_ARRAY, V_TUPLE), "value_array_t")
 
 
-def require_int(h: Heap, a: FuncArgs) raises:
+def require_int(h: Heap, a: FuncArgs) raises JinjaError:
     a.ensure_count(1)
     if len(a.args) > 0:
         a.ensure_kind(h, a.args[0], _kinds(V_INT), "value_int_t")
 
 
-def require_float(h: Heap, a: FuncArgs) raises:
+def require_float(h: Heap, a: FuncArgs) raises JinjaError:
     a.ensure_count(1)
     if len(a.args) > 0:
         a.ensure_kind(h, a.args[0], _kinds(V_FLOAT), "value_float_t")
 
 
-def require_bool(h: Heap, a: FuncArgs) raises:
+def require_bool(h: Heap, a: FuncArgs) raises JinjaError:
     a.ensure_count(1)
     if len(a.args) > 0:
         a.ensure_kind(h, a.args[0], _kinds(V_BOOL), "value_bool_t")
 
 
-def require_object(h: Heap, a: FuncArgs) raises:
+def require_object(h: Heap, a: FuncArgs) raises JinjaError:
     a.ensure_count(1)
     if len(a.args) > 0:
         a.ensure_kind(h, a.args[0], _kinds(V_OBJECT), "value_object_t")
 
 
-def not_implemented(msg: String) -> Error:
-    return Error(_NOTIMPL + "NotImplemented: " + msg)
+def not_implemented(msg: String) -> JinjaError:
+    return JinjaError(K_NOTIMPL, "NotImplemented: " + msg)

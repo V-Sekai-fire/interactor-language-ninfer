@@ -7,6 +7,7 @@ flags never change equality or text; they exist so the renderer can tell which b
 prompt came from a request field.
 """
 
+from ninfer.text.jinja.error import JinjaError, codepoints, jinja_error, push_utf8
 from std.collections import Dict, List
 
 from ninfer.text.unicode import Unicode, append_utf8, utf8_codepoints, _Ranges, _hex
@@ -140,17 +141,17 @@ def sub_string(s: String, begin: Int, end: Int) -> String:
     return String(unsafe_from_utf8=out)
 
 
-def characters(ju: JU, text: String) raises -> List[Character]:
+def characters(ju: JU, text: String) raises JinjaError -> List[Character]:
     var out = List[Character]()
-    var spans = utf8_codepoints(string_bytes(text), "Jinja string")
+    var spans = codepoints(string_bytes(text), "Jinja string")
     for sp in spans:
         out.append(Character(sp.value, sp.offset, sp.offset + sp.length))
     return out^
 
 
-def codepoint_length(text: String) raises -> Int:
+def codepoint_length(text: String) raises JinjaError -> Int:
     var n = 0
-    for sp in utf8_codepoints(string_bytes(text), "Jinja string"):
+    for sp in codepoints(string_bytes(text), "Jinja string"):
         n += 1
     return n
 
@@ -173,22 +174,18 @@ def _bound(value: Int, n: Int, lo: Int, hi: Int) -> Int:
     return min(max(v, lo), hi)
 
 
-def slice_indices(size: Int, start: Optional[Int], stop: Optional[Int], step: Int) raises -> Slice:
+def slice_indices(size: Int, start: Optional[Int], stop: Optional[Int], step: Int) raises JinjaError -> Slice:
     if step == 0:
-        raise Error("slice step cannot be zero")
+        raise jinja_error("slice step cannot be zero")
     var n = size
     var lo = 0 if step > 0 else -1
     var hi = n if step > 0 else n - 1
-    var s: Int
-    if start:
-        s = _bound(start.value(), n, lo, hi)
-    else:
-        s = 0 if step > 0 else n - 1
-    var e: Int
-    if stop:
-        e = _bound(stop.value(), n, lo, hi)
-    else:
-        e = n if step > 0 else -1
+    var s = 0 if step > 0 else n - 1
+    if case .Some(first) = start:
+        s = _bound(first, n, lo, hi)
+    var e = n if step > 0 else -1
+    if case .Some(last) = stop:
+        e = _bound(last, n, lo, hi)
     return Slice(s, e, step)
 
 
@@ -221,7 +218,7 @@ struct JString(Copyable, Movable):
             n += p.val.byte_length()
         return n
 
-    def length(self) raises -> Int:
+    def length(self) raises JinjaError -> Int:
         return codepoint_length(self.str())
 
     def append(mut self, other: JString):
@@ -248,10 +245,10 @@ struct JString(Copyable, Movable):
     def append_str(mut self, text: String):
         self.append(JString(text))
 
-    def cut_bytes(self, begin: Int, end: Int) raises -> JString:
+    def cut_bytes(self, begin: Int, end: Int) raises JinjaError -> JString:
         var size = self.byte_size()
         if begin > end or end > size:
-            raise Error("Jinja byte slice exceeds string")
+            raise jinja_error("Jinja byte slice exceeds string")
         if begin == 0 and end == size:
             return self.copy()
         var result = JString()
@@ -270,7 +267,7 @@ struct JString(Copyable, Movable):
             offset = next
         return result^
 
-    def slice(self, ju: JU, start: Optional[Int], stop: Optional[Int], step: Int = 1) raises -> JString:
+    def slice(self, ju: JU, start: Optional[Int], stop: Optional[Int], step: Int = 1) raises JinjaError -> JString:
         var text = self.str()
         var chars = characters(ju, text)
         var bounds = slice_indices(len(chars), start, stop, step)
@@ -295,10 +292,11 @@ struct JString(Copyable, Movable):
 
     def split(
         self, ju: JU, separator: Optional[String], maxsplit_in: Int, reverse: Bool
-    ) raises -> List[JString]:
+    ) raises JinjaError -> List[JString]:
         var text = self.str()
-        if separator and separator.value().byte_length() == 0:
-            raise Error("empty separator")
+        if case .Some(sep) = separator:
+            if sep.byte_length() == 0:
+                raise jinja_error("empty separator")
         var result = List[JString]()
         var begin = 0
         var end = text.byte_length()
@@ -324,8 +322,7 @@ struct JString(Copyable, Movable):
             if maxsplit == 0:
                 result.append(self.cut_bytes(begin, end))
                 break
-            if separator:
-                var sep = separator.value()
+            if case .Some(sep) = separator:
                 var sb = sep.as_bytes()
                 var pos = -1
                 if end - begin >= len(sb):
@@ -387,12 +384,12 @@ struct JString(Copyable, Movable):
 
     def strip(
         self, ju: JU, left: Bool, right: Bool, chars_to_strip: Optional[String] = None
-    ) raises -> JString:
+    ) raises JinjaError -> JString:
         var text = self.str()
         var chars = characters(ju, text)
         var matching = List[Int]()
-        if chars_to_strip:
-            for c in characters(ju, chars_to_strip.value()):
+        if case .Some(strip_set) = chars_to_strip:
+            for c in characters(ju, strip_set):
                 matching.append(c.value)
         var selected = Bool(chars_to_strip)
         var begin = 0
@@ -407,7 +404,7 @@ struct JString(Copyable, Movable):
         var last_byte = text.byte_length() if end == len(chars) else chars[end].begin
         return self.cut_bytes(first_byte, last_byte)
 
-    def is_uppercase(self, ju: JU) raises -> Bool:
+    def is_uppercase(self, ju: JU) raises JinjaError -> Bool:
         var found = False
         for ch in characters(ju, self.str()):
             if not ju.is_cased(ch.value):
@@ -417,7 +414,7 @@ struct JString(Copyable, Movable):
             found = True
         return found
 
-    def is_lowercase(self, ju: JU) raises -> Bool:
+    def is_lowercase(self, ju: JU) raises JinjaError -> Bool:
         var found = False
         for ch in characters(ju, self.str()):
             if not ju.is_cased(ch.value):
@@ -427,7 +424,7 @@ struct JString(Copyable, Movable):
             found = True
         return found
 
-    def map_case(self, ju: JU, mode: Int) raises -> JString:
+    def map_case(self, ju: JU, mode: Int) raises JinjaError -> JString:
         var ends = List[Int]()
         var offset = 0
         for p in self.parts:
@@ -446,16 +443,16 @@ struct JString(Copyable, Movable):
             off = ends[i]
         return result^
 
-    def uppercase(self, ju: JU) raises -> JString:
+    def uppercase(self, ju: JU) raises JinjaError -> JString:
         return self.map_case(ju, CASE_UPPER)
 
-    def lowercase(self, ju: JU) raises -> JString:
+    def lowercase(self, ju: JU) raises JinjaError -> JString:
         return self.map_case(ju, CASE_LOWER)
 
-    def capitalize(self, ju: JU) raises -> JString:
+    def capitalize(self, ju: JU) raises JinjaError -> JString:
         return self.map_case(ju, CASE_CAPITALIZE)
 
-    def titlecase(self, ju: JU) raises -> JString:
+    def titlecase(self, ju: JU) raises JinjaError -> JString:
         return self.map_case(ju, CASE_TITLE)
 
 
@@ -468,23 +465,19 @@ def _matches(ju: JU, cp: Int, selected: Bool, matching: List[Int]) -> Bool:
     return ju.whitespace(cp)
 
 
-def _append_case(ju: JU, mut out: List[UInt8], cp: Int, mode: Int) raises:
-    var sp = ju.special.get(cp)
-    if sp:
-        var i = sp.value()
+def _append_case(ju: JU, mut out: List[UInt8], cp: Int, mode: Int) raises JinjaError:
+    if case .Some(i) = ju.special.get(cp):
         var text = ju.special_lo[i] if mode == CASE_LOWER else (ju.special_up[i] if mode == CASE_UPPER else ju.special_ti[i])
         for b in text.as_bytes():
             out.append(b)
         return
     var mapped = cp
-    var sm = ju.simple.get(cp)
-    if sm:
-        var i = sm.value()
+    if case .Some(i) = ju.simple.get(cp):
         mapped = ju.simple_lo[i] if mode == CASE_LOWER else (ju.simple_up[i] if mode == CASE_UPPER else ju.simple_ti[i])
-    append_utf8(out, mapped)
+    push_utf8(out, mapped)
 
 
-def map_case_text(ju: JU, text: String, mode: Int, mut boundaries: List[Int]) raises -> String:
+def map_case_text(ju: JU, text: String, mode: Int, mut boundaries: List[Int]) raises JinjaError -> String:
     var chars = characters(ju, text)
     var out = List[UInt8]()
     var previous_cased = False
@@ -516,7 +509,7 @@ def map_case_text(ju: JU, text: String, mode: Int, mut boundaries: List[Int]) ra
                     continue
                 after = ju.is_cased(chars[j].value)
                 break
-            append_utf8(out, 0x3C2 if (before and not after) else 0x3C3)
+            push_utf8(out, 0x3C2 if (before and not after) else 0x3C3)
         else:
             _append_case(ju, out, cp, current)
         previous_cased = ju.is_cased(cp)

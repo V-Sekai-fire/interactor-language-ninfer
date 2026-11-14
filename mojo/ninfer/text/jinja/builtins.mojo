@@ -5,6 +5,7 @@ type; here a builtin is identified by `(receiver kind, name)` and dispatched by 
 (receiver bound as argument 0) or `call_global`.
 """
 
+from ninfer.text.jinja.error import JinjaError, jinja_error, parse_float, K_NOTIMPL
 from std.collections import List
 
 from ninfer.text.jinja.jstring import (
@@ -93,7 +94,7 @@ def _class_label(c: Int) -> String:
     return "St10shared_ptrIN5jinja" + String(name.byte_length()) + name + "EE"
 
 
-def ensure_vals(h: Heap, a: FuncArgs, classes: List[Int], required: List[Bool]) raises:
+def ensure_vals(h: Heap, a: FuncArgs, classes: List[Int], required: List[Bool]) raises JinjaError:
     var need = 0
     for r in required:
         if r:
@@ -102,13 +103,13 @@ def ensure_vals(h: Heap, a: FuncArgs, classes: List[Int], required: List[Bool]) 
     for i in range(len(classes)):
         if required[i] and len(a.args) > i:
             if not is_class(h, a.args[i], classes[i]):
-                raise Error(
+                raise jinja_error(
                     "Function '" + a.func_name + "' expected value of type " + _class_label(classes[i])
                     + ", got " + vtype(h, a.args[i])
                 )
 
 
-def ev1(h: Heap, a: FuncArgs, c0: Int) raises:
+def ev1(h: Heap, a: FuncArgs, c0: Int) raises JinjaError:
     var cs = List[Int]()
     cs.append(c0)
     var rs = List[Bool]()
@@ -116,7 +117,7 @@ def ev1(h: Heap, a: FuncArgs, c0: Int) raises:
     ensure_vals(h, a, cs, rs)
 
 
-def ev2(h: Heap, a: FuncArgs, c0: Int, c1: Int) raises:
+def ev2(h: Heap, a: FuncArgs, c0: Int, c1: Int) raises JinjaError:
     var cs = List[Int]()
     cs.append(c0)
     cs.append(c1)
@@ -126,8 +127,8 @@ def ev2(h: Heap, a: FuncArgs, c0: Int, c1: Int) raises:
     ensure_vals(h, a, cs, rs)
 
 
-def _bounds_msg(msg: String) -> Error:
-    return Error(msg)
+def _bounds_msg(msg: String) -> JinjaError:
+    return jinja_error(msg)
 
 
 def _bool(mut h: Heap, b: Bool) -> Int:
@@ -146,7 +147,7 @@ def pos_or(mut h: Heap, a: FuncArgs, pos: Int, default: Int) -> Int:
     return a.args[pos] if len(a.args) > pos else default
 
 
-def get_pos(a: FuncArgs, pos: Int) raises -> Int:
+def get_pos(a: FuncArgs, pos: Int) raises JinjaError -> Int:
     return a.get_pos(pos)
 
 
@@ -170,17 +171,17 @@ def _is_test_name(t: String) -> Bool:
     return False
 
 
-def call_global(mut h: Heap, name: String, mut a: FuncArgs) raises -> Int:
+def call_global(mut h: Heap, name: String, mut a: FuncArgs) raises JinjaError -> Int:
     a.func_name = name
     if name == "raise_exception":
         ev1(h, a, C_STRING)
-        raise Error("Jinja Exception: " + as_string(h, a.get_pos(0)).str())
+        raise jinja_error("Jinja Exception: " + as_string(h, a.get_pos(0)).str())
     if name == "namespace":
         var out = h.object()
         h.nodes[out].has_builtins = True
         for arg in a.args:
             if h.nodes[arg].kind != V_KWARG:
-                raise Error("namespace() arguments must be kwargs")
+                raise jinja_error("namespace() arguments must be kwargs")
             var kname = h.nodes[arg].name
             obj_insert_str(h, out, kname, h.nodes[arg].kwval)
         return out
@@ -191,13 +192,13 @@ def call_global(mut h: Heap, name: String, mut a: FuncArgs) raises -> Int:
             return h.text("")
         if fmt.find("%") < 0:
             return h.string(JString(fmt, 0, True))
-        raise Error("NotImplemented: strftime_now is not supported by the Mojo port")
+        raise jinja_error("NotImplemented: strftime_now is not supported by the Mojo port")
     if name == "range":
         a.ensure_count(1, 3)
         # ensure_vals<int,int,int>(true,false,false): one required argument, type-checked
         a.ensure_count(1)
         if not is_class(h, a.args[0], C_INT):
-            raise Error(
+            raise jinja_error(
                 "Function '" + a.func_name + "' expected value of type " + _class_label(C_INT)
                 + ", got " + vtype(h, a.args[0])
             )
@@ -214,7 +215,7 @@ def call_global(mut h: Heap, name: String, mut a: FuncArgs) raises -> Int:
             stop = as_int(h, a.args[1])
             step = as_int(h, a.args[2])
         if step == 0:
-            raise Error("range() step argument must not be zero")
+            raise jinja_error("range() step argument must not be zero")
         var out = h.array()
         var i = start
         while (i < stop) if step > 0 else (i > stop):
@@ -225,28 +226,28 @@ def call_global(mut h: Heap, name: String, mut a: FuncArgs) raises -> Int:
         return tojson(h, a)
     if name.startswith("test_is_"):
         return call_test(h, String(name[byte=8:]), a)
-    raise Error("Unknown function '" + name + "'")
+    raise jinja_error("Unknown function '" + name + "'")
 
 
-def out_push(mut h: Heap, arr: Int, v: Int) raises:
+def out_push(mut h: Heap, arr: Int, v: Int) raises JinjaError:
     if h.nodes[arr].kind != V_ARRAY:
-        raise Error("Attempting to modify immutable type")
+        raise jinja_error("Attempting to modify immutable type")
     h.nodes[arr].arr.append(v)
 
 
-def _type_test(mut h: Heap, a: FuncArgs, c0: Int, c1: Int = -1, c2: Int = -1) raises -> Int:
+def _type_test(mut h: Heap, a: FuncArgs, c0: Int, c1: Int = -1, c2: Int = -1) raises JinjaError -> Int:
     a.ensure_count(1)
     var v = a.get_pos(0)
     var r = is_class(h, v, c0) or (c1 >= 0 and is_class(h, v, c1)) or (c2 >= 0 and is_class(h, v, c2))
     return h.boolean(r)
 
 
-def _cmp_test(mut h: Heap, a: FuncArgs, op: Int) raises -> Int:
+def _cmp_test(mut h: Heap, a: FuncArgs, op: Int) raises JinjaError -> Int:
     a.ensure_count(2, 2)
     return h.boolean(value_compare(h, a.get_pos(0), a.get_pos(1), op))
 
 
-def call_test(mut h: Heap, t: String, mut a: FuncArgs) raises -> Int:
+def call_test(mut h: Heap, t: String, mut a: FuncArgs) raises JinjaError -> Int:
     if t == "boolean":
         return _type_test(h, a, C_BOOL)
     if t == "callable":
@@ -268,7 +269,7 @@ def call_test(mut h: Heap, t: String, mut a: FuncArgs) raises -> Int:
         ev2(h, a, C_INT, C_INT)
         var d = h.nodes[a.get_pos(1)].i
         if d == 0:
-            raise Error("integer division by zero")
+            raise jinja_error("integer division by zero")
         return h.boolean(h.nodes[a.get_pos(0)].i % d == 0)
     if t == "string":
         return _type_test(h, a, C_STRING)
@@ -317,30 +318,30 @@ def call_test(mut h: Heap, t: String, mut a: FuncArgs) raises -> Int:
             return h.boolean(False)
         if hk == V_STRING:
             if h.nodes[needle].kind != V_STRING:
-                raise Error(
+                raise jinja_error(
                     "'in' test expects args[1] as string when args[0] is string, got args[1] as "
                     + vtype(h, needle)
                 )
             return h.boolean(h.nodes[hay].s.str().find(h.nodes[needle].s.str()) >= 0)
         if hk == V_OBJECT:
             return h.boolean(obj_find(h, hay, needle) >= 0)
-        raise Error("'in' test expects iterable as first argument, got " + vtype(h, hay))
+        raise jinja_error("'in' test expects iterable as first argument, got " + vtype(h, hay))
     if t == "test":
         ev1(h, a, C_STRING)
         return h.boolean(_is_test_name(h.nodes[a.get_pos(0)].s.str()))
     if t == "sameas":
-        raise Error("\x03NotImplemented: sameas test not implemented")
+        raise JinjaError(K_NOTIMPL, "NotImplemented: sameas test not implemented")
     if t == "escaped":
-        raise Error("\x03NotImplemented: escaped test not implemented")
+        raise JinjaError(K_NOTIMPL, "NotImplemented: escaped test not implemented")
     if t == "filter":
-        raise Error("\x03NotImplemented: filter test not implemented")
-    raise Error("Unknown test '" + t + "'")
+        raise JinjaError(K_NOTIMPL, "NotImplemented: filter test not implemented")
+    raise jinja_error("Unknown test '" + t + "'")
 
 
 # --- tojson -----------------------------------------------------------------------------------
 
 
-def tojson(mut h: Heap, mut a: FuncArgs) raises -> Int:
+def tojson(mut h: Heap, mut a: FuncArgs) raises JinjaError -> Int:
     a.ensure_count(1, 5)
     var val_ascii = kwarg_or_pos(h, a, "ensure_ascii", 1)
     var val_indent = kwarg_or_pos(h, a, "indent", 2)
@@ -373,7 +374,7 @@ def tojson(mut h: Heap, mut a: FuncArgs) raises -> Int:
 # --- shared filters -----------------------------------------------------------------------------
 
 
-def default_value(mut h: Heap, a: FuncArgs) raises -> Int:
+def default_value(mut h: Heap, a: FuncArgs) raises JinjaError -> Int:
     a.ensure_count(1, 3)
     var input = a.get_pos(0)
     var use_default = h.nodes[input].kind == V_UNDEF
@@ -385,20 +386,20 @@ def default_value(mut h: Heap, a: FuncArgs) raises -> Int:
     return input
 
 
-def _slice_bound(h: Heap, v: Int) raises -> Optional[Int]:
+def _slice_bound(h: Heap, v: Int) raises JinjaError -> Optional[Int]:
     var k = h.nodes[v].kind
     if k == V_UNDEF or k == V_NONE:
         return None
     return as_int(h, v)
 
 
-def slice_value(mut h: Heap, a: FuncArgs) raises -> Int:
+def slice_value(mut h: Heap, a: FuncArgs) raises JinjaError -> Int:
     a.ensure_count(4, 4)
     var input = a.get_pos(0)
     var start = _slice_bound(h, a.get_pos(1))
     var stop = _slice_bound(h, a.get_pos(2))
     var st = _slice_bound(h, a.get_pos(3))
-    var step = st.value() if st else 1
+    var step = st.or_else(1)
     if h.nodes[input].kind == V_STRING:
         var s = h.nodes[input].s.copy()
         return h.string(s.slice(h.ju, start, stop, step))
@@ -414,7 +415,7 @@ def slice_value(mut h: Heap, a: FuncArgs) raises -> Int:
     return result
 
 
-def _split_string(mut h: Heap, a: FuncArgs, reverse: Bool) raises -> Int:
+def _split_string(mut h: Heap, a: FuncArgs, reverse: Bool) raises JinjaError -> Int:
     a.ensure_count(1, 3)
     var separator = kwarg_or_pos(h, a, "sep", 1)
     var count = kwarg_or_pos(h, a, "maxsplit", 2)
@@ -430,7 +431,7 @@ def _split_string(mut h: Heap, a: FuncArgs, reverse: Bool) raises -> Int:
     return result
 
 
-def _stoi(text: String, base_in: Int) raises -> Int:
+def _stoi(text: String, base_in: Int) raises JinjaError -> Int:
     """`std::stoi(str, nullptr, base)`: raises when nothing converts or the value leaves int range."""
     var b = text.as_bytes()
     var i = 0
@@ -456,14 +457,14 @@ def _stoi(text: String, base_in: Int) raises -> Int:
         any = True
         value = value * base + d
         if value > 4294967296:
-            raise Error("out of range")
+            raise jinja_error("out of range")
         i += 1
     if not any:
-        raise Error("no conversion")
+        raise jinja_error("no conversion")
     if neg:
         value = -value
     if value > 2147483647 or value < -2147483648:
-        raise Error("out of range")
+        raise jinja_error("out of range")
     return value
 
 
@@ -477,7 +478,7 @@ def _digit(c: UInt8) -> Int:
     return -1
 
 
-def _stod(text: String) raises -> Float64:
+def _stod(text: String) raises JinjaError -> Float64:
     var b = text.as_bytes()
     var i = 0
     while i < len(b) and (b[i] == 0x20 or (b[i] >= 0x09 and b[i] <= 0x0D)):
@@ -500,7 +501,7 @@ def _stod(text: String) raises -> Float64:
             i += 1
             digits += 1
     if digits == 0:
-        raise Error("no conversion")
+        raise jinja_error("no conversion")
     if i < len(b) and (b[i] == 0x65 or b[i] == 0x45):
         var j = i + 1
         if j < len(b) and (b[j] == 0x2B or b[j] == 0x2D):
@@ -512,13 +513,13 @@ def _stod(text: String) raises -> Float64:
         if e > 0:
             i = j
     var prefix = String(text[byte=start:i])
-    var value = atof(prefix)
+    var value = parse_float(prefix)
     if value > 1.7976931348623157e308 or value < -1.7976931348623157e308:
-        raise Error("out of range")
+        raise jinja_error("out of range")
     return value
 
 
-def _selectattr(mut h: Heap, mut a: FuncArgs, is_reject: Bool) raises -> Int:
+def _selectattr(mut h: Heap, mut a: FuncArgs, is_reject: Bool) raises JinjaError -> Int:
     a.ensure_count(2, 4)
     var cs = List[Int]()
     cs.append(C_ARRAY)
@@ -539,7 +540,7 @@ def _selectattr(mut h: Heap, mut a: FuncArgs, is_reject: Bool) raises -> Int:
     if n == 2:
         for item in arr:
             if h.nodes[item].kind != V_OBJECT:
-                raise Error("selectattr: item is not an object")
+                raise jinja_error("selectattr: item is not an object")
             var attr_val = obj_at(h, item, attribute, val_default)
             var sel = as_bool(h, attr_val)
             if is_reject:
@@ -551,7 +552,7 @@ def _selectattr(mut h: Heap, mut a: FuncArgs, is_reject: Bool) raises -> Int:
         var test_name = as_string(h, a.get_pos(1)).str()
         var test_val = a.get_pos(2)
         if not _is_test_name(test_name):
-            raise Error("selectattr: unknown test '" + test_name + "'")
+            raise jinja_error("selectattr: unknown test '" + test_name + "'")
         for item in arr:
             var ta = FuncArgs(a.ctx)
             ta.push_back(item)
@@ -566,10 +567,10 @@ def _selectattr(mut h: Heap, mut a: FuncArgs, is_reject: Bool) raises -> Int:
     var test_name = as_string(h, a.get_pos(2)).str()
     var extra = a.get_pos(3)
     if not _is_test_name(test_name):
-        raise Error("selectattr: unknown test '" + test_name + "'")
+        raise jinja_error("selectattr: unknown test '" + test_name + "'")
     for item in arr:
         if h.nodes[item].kind != V_OBJECT:
-            raise Error("selectattr: item is not an object")
+            raise jinja_error("selectattr: item is not an object")
         var attr_val = obj_at(h, item, attribute, val_default)
         var ta = FuncArgs(a.ctx)
         ta.push_back(attr_val)
@@ -618,7 +619,7 @@ comptime _UNDEF_B = (
 )
 
 
-def has_method(h: Heap, recv: Int, name: String) raises -> Bool:
+def has_method(h: Heap, recv: Int, name: String) raises JinjaError -> Bool:
     """`input->get_builtins().find(name)`; raises for kinds without builtins."""
     var k = h.nodes[recv].kind
     if k == V_INT or k == V_FLOAT:
@@ -635,16 +636,16 @@ def has_method(h: Heap, recv: Int, name: String) raises -> Bool:
         return _has(_NONE_B, name)
     if k == V_UNDEF:
         return _has(_UNDEF_B, name)
-    raise Error(vtype(h, recv) + " has no builtins")
+    raise jinja_error(vtype(h, recv) + " has no builtins")
 
 
-def call_method(mut h: Heap, name: String, mut a: FuncArgs) raises -> Int:
+def call_method(mut h: Heap, name: String, mut a: FuncArgs) raises JinjaError -> Int:
     """Invoke builtin `name` of the type of argument 0."""
     a.func_name = name
     var recv = a.get_pos(0) if len(a.args) > 0 else -1
     var k = h.nodes[recv].kind if recv >= 0 else V_UNDEF
     if recv < 0:
-        raise Error("Function '" + name + "' expected at least 1 arguments, got 0")
+        raise jinja_error("Function '" + name + "' expected at least 1 arguments, got 0")
     if k == V_UNDEF:
         return _undef_method(h, name, a)
     if k == V_NONE:
@@ -666,7 +667,7 @@ def call_method(mut h: Heap, name: String, mut a: FuncArgs) raises -> Int:
     return _array_method(h, name, a)
 
 
-def _undef_method(mut h: Heap, name: String, a: FuncArgs) raises -> Int:
+def _undef_method(mut h: Heap, name: String, a: FuncArgs) raises JinjaError -> Int:
     if name == "default":
         return default_value(h, a)
     var strings = " capitalize join lower replace safe string strip title truncate upper "
@@ -682,10 +683,10 @@ def _undef_method(mut h: Heap, name: String, a: FuncArgs) raises -> Int:
         return h.undef()
     if ints.find(key) >= 0:
         return h.integer(0)
-    raise Error("Unknown builtin '" + name + "'")
+    raise jinja_error("Unknown builtin '" + name + "'")
 
 
-def _none_method(mut h: Heap, name: String, mut a: FuncArgs) raises -> Int:
+def _none_method(mut h: Heap, name: String, mut a: FuncArgs) raises JinjaError -> Int:
     if name == "default":
         return default_value(h, a)
     if name == "tojson":
@@ -695,7 +696,7 @@ def _none_method(mut h: Heap, name: String, mut a: FuncArgs) raises -> Int:
     return h.array()
 
 
-def _int_method(mut h: Heap, name: String, mut a: FuncArgs) raises -> Int:
+def _int_method(mut h: Heap, name: String, mut a: FuncArgs) raises JinjaError -> Int:
     if name == "abs":
         ev1(h, a, C_INT)
         var v = as_int(h, a.get_pos(0))
@@ -710,7 +711,7 @@ def _int_method(mut h: Heap, name: String, mut a: FuncArgs) raises -> Int:
     return tojson(h, a)
 
 
-def _float_method(mut h: Heap, name: String, mut a: FuncArgs) raises -> Int:
+def _float_method(mut h: Heap, name: String, mut a: FuncArgs) raises JinjaError -> Int:
     if name == "abs":
         ev1(h, a, C_FLOAT)
         var v = as_float(h, a.get_pos(0))
@@ -724,7 +725,7 @@ def _float_method(mut h: Heap, name: String, mut a: FuncArgs) raises -> Int:
     return tojson(h, a)
 
 
-def _bool_method(mut h: Heap, name: String, mut a: FuncArgs) raises -> Int:
+def _bool_method(mut h: Heap, name: String, mut a: FuncArgs) raises JinjaError -> Int:
     if name == "int":
         ev1(h, a, C_BOOL)
         return h.integer(1 if as_bool(h, a.get_pos(0)) else 0)
@@ -735,11 +736,11 @@ def _bool_method(mut h: Heap, name: String, mut a: FuncArgs) raises -> Int:
     return h.text("True" if as_bool(h, a.get_pos(0)) else "False")
 
 
-def _strip(mut h: Heap, a: FuncArgs, left: Bool, right: Bool, check_string: Bool) raises -> Int:
+def _strip(mut h: Heap, a: FuncArgs, left: Bool, right: Bool, check_string: Bool) raises JinjaError -> Int:
     var input = a.get_pos(0)
     if check_string:
         if h.nodes[input].kind != V_STRING:
-            raise Error("strip() first argument must be a string")
+            raise jinja_error("strip() first argument must be a string")
     else:
         ev1(h, a, C_STRING)
     var chars = kwarg_or_pos(h, a, "chars", 1)
@@ -749,7 +750,7 @@ def _strip(mut h: Heap, a: FuncArgs, left: Bool, right: Bool, check_string: Bool
     return h.string(s.strip(h.ju, left, right, as_string(h, chars).str()))
 
 
-def _string_method(mut h: Heap, name: String, mut a: FuncArgs) raises -> Int:
+def _string_method(mut h: Heap, name: String, mut a: FuncArgs) raises JinjaError -> Int:
     if name == "upper":
         ev1(h, a, C_STRING)
         return h.string(as_string(h, a.get_pos(0)).uppercase(h.ju))
@@ -790,9 +791,9 @@ def _string_method(mut h: Heap, name: String, mut a: FuncArgs) raises -> Int:
         var val_base = kwarg_or_pos(h, a, "base", 2)
         var base = 10 if h.nodes[val_base].kind == V_UNDEF else as_int(h, val_base)
         if base != 0 and (base < 2 or base > 36):
-            raise Error("int() base must be 0 or between 2 and 36")
+            raise jinja_error("int() base must be 0 or between 2 and 36")
         if h.nodes[val_input].kind != V_STRING:
-            raise Error("int() first argument must be a string")
+            raise jinja_error("int() first argument must be a string")
         try:
             return h.integer(_stoi(h.nodes[val_input].s.str(), base))
         except:
@@ -816,11 +817,11 @@ def _string_method(mut h: Heap, name: String, mut a: FuncArgs) raises -> Int:
     if name == "indent":
         return _indent(h, a)
     if name == "join":
-        raise Error("\x03NotImplemented: String join builtin not implemented")
-    raise Error("Unknown builtin '" + name + "'")
+        raise JinjaError(K_NOTIMPL, "NotImplemented: String join builtin not implemented")
+    raise jinja_error("Unknown builtin '" + name + "'")
 
 
-def _replace(mut h: Heap, a: FuncArgs) raises -> Int:
+def _replace(mut h: Heap, a: FuncArgs) raises JinjaError -> Int:
     a.ensure_count(3, 4)
     var source = as_string(h, a.get_pos(0))
     var old_str = as_string(h, a.get_pos(1)).str()
@@ -873,10 +874,10 @@ def _replace(mut h: Heap, a: FuncArgs) raises -> Int:
     return h.string(result^)
 
 
-def _format(mut h: Heap, a: FuncArgs) raises -> Int:
+def _format(mut h: Heap, a: FuncArgs) raises JinjaError -> Int:
     var val_input = a.get_pos(0)
     if h.nodes[val_input].kind != V_STRING:
-        raise Error("format() first argument must be a string")
+        raise jinja_error("format() first argument must be a string")
     var fmt = as_string(h, val_input)
     var s = fmt.str()
     var result = JString()
@@ -889,7 +890,7 @@ def _format(mut h: Heap, a: FuncArgs) raises -> Int:
             i += 1
             continue
         if i + 1 >= len(sb) or sb[i + 1] != 0x7D:
-            raise Error("\x03NotImplemented: format() only supports simple '{}' placeholders")
+            raise JinjaError(K_NOTIMPL, "NotImplemented: format() only supports simple '{}' placeholders")
         result.append(fmt.cut_bytes(begin, i))
         result.append(as_string(h, a.get_pos(arg_idx)))
         arg_idx += 1
@@ -900,14 +901,14 @@ def _format(mut h: Heap, a: FuncArgs) raises -> Int:
     return h.string(result^)
 
 
-def _indent(mut h: Heap, a: FuncArgs) raises -> Int:
+def _indent(mut h: Heap, a: FuncArgs) raises JinjaError -> Int:
     a.ensure_count(1, 4)
     var val_input = a.get_pos(0)
     var val_width = kwarg_or_pos(h, a, "width", 1)
     var first = as_bool(h, kwarg_or_pos(h, a, "first", 2))
     var blank = as_bool(h, kwarg_or_pos(h, a, "blank", 3))
     if h.nodes[val_input].kind != V_STRING:
-        raise Error("indent() first argument must be a string")
+        raise jinja_error("indent() first argument must be a string")
     var indent = JString("    ")
     if h.nodes[val_width].kind == V_INT:
         indent = JString(" " * h.nodes[val_width].i)
@@ -941,7 +942,7 @@ def _indent(mut h: Heap, a: FuncArgs) raises -> Int:
 # --- arrays ------------------------------------------------------------------------------------
 
 
-def _sorted(mut h: Heap, items: List[Int], reverse: Bool, attribute: Int, attr_is_int: Bool, attr_int: Int) raises -> List[Int]:
+def _sorted(mut h: Heap, items: List[Int], reverse: Bool, attribute: Int, attr_is_int: Bool, attr_int: Int) raises JinjaError -> List[Int]:
     var arr = items.copy()
     var op = OP_GT if reverse else OP_LT
     for i in range(1, len(arr)):
@@ -959,7 +960,7 @@ def _sorted(mut h: Heap, items: List[Int], reverse: Bool, attribute: Int, attr_i
                     va = obj_at_strict(h, a, attribute)
                     vb = obj_at_strict(h, b, attribute)
                 else:
-                    raise Error(
+                    raise jinja_error(
                         "sort: unsupported object attribute comparison between " + vtype(h, a) + " and " + vtype(h, b)
                     )
             if value_compare(h, va, vb, op):
@@ -971,13 +972,13 @@ def _sorted(mut h: Heap, items: List[Int], reverse: Bool, attribute: Int, attr_i
     return arr^
 
 
-def _array_at(h: Heap, arr: Int, index_in: Int) raises -> Int:
+def _array_at(h: Heap, arr: Int, index_in: Int) raises JinjaError -> Int:
     var index = index_in
     var n = len(h.nodes[arr].arr)
     if index < 0:
         index += n
     if index < 0 or index >= n:
-        raise Error("Index " + String(index) + " out of bounds for array of size " + String(n))
+        raise jinja_error("Index " + String(index) + " out of bounds for array of size " + String(n))
     return h.nodes[arr].arr[index]
 
 
@@ -999,7 +1000,7 @@ def _copy_kind(mut h: Heap, like: Int, items: List[Int]) -> Int:
     return r
 
 
-def _array_method(mut h: Heap, name: String, mut a: FuncArgs) raises -> Int:
+def _array_method(mut h: Heap, name: String, mut a: FuncArgs) raises JinjaError -> Int:
     if name == "list":
         ev1(h, a, C_ARRAY)
         var r = h.array()
@@ -1030,7 +1031,7 @@ def _array_method(mut h: Heap, name: String, mut a: FuncArgs) raises -> Int:
     if name == "append":
         a.ensure_count(2)
         if not is_class(h, a.get_pos(0), C_ARRAY):
-            raise Error("append: first argument must be an array")
+            raise jinja_error("append: first argument must be an array")
         out_push(h, a.get_pos(0), a.get_pos(1))
         return a.get_pos(0)
     if name == "pop":
@@ -1045,19 +1046,19 @@ def _array_method(mut h: Heap, name: String, mut a: FuncArgs) raises -> Int:
         var index = as_int(h, a.get_pos(1)) if len(a.args) == 2 else -1
         var arr = a.get_pos(0)
         if h.nodes[arr].kind != V_ARRAY:
-            raise Error("Attempting to modify immutable type")
+            raise jinja_error("Attempting to modify immutable type")
         var n = len(h.nodes[arr].arr)
         if index < 0:
             index = n + index
         if index < 0 or index >= n:
-            raise Error("Index " + String(index) + " out of bounds for array of size " + String(n))
+            raise jinja_error("Index " + String(index) + " out of bounds for array of size " + String(n))
         var val = h.nodes[arr].arr[index]
         _ = h.nodes[arr].arr.pop(index)
         return val
     if name == "sort":
         a.ensure_count(1, 4)
         if not is_class(h, a.get_pos(0), C_ARRAY):
-            raise Error("sort: first argument must be an array")
+            raise jinja_error("sort: first argument must be an array")
         var val = a.get_pos(0)
         var reverse = as_bool(h, kwarg_or_pos(h, a, "reverse", 1))
         var attribute = kwarg_or_pos(h, a, "attribute", 3)
@@ -1081,7 +1082,7 @@ def _array_method(mut h: Heap, name: String, mut a: FuncArgs) raises -> Int:
         _ = kwarg_or_pos(h, a, "case_sensitive", 1)
         var attribute = kwarg_or_pos(h, a, "attribute", 2)
         if h.nodes[attribute].kind != V_UNDEF:
-            raise Error("\x03NotImplemented: " + name + ": attribute not implemented")
+            raise JinjaError(K_NOTIMPL, "NotImplemented: " + name + ": attribute not implemented")
         var arr = as_array(h, a.get_pos(0))
         if len(arr) == 0:
             return h.undef()
@@ -1091,20 +1092,20 @@ def _array_method(mut h: Heap, name: String, mut a: FuncArgs) raises -> Int:
                 result = arr[i]
         return result
     if name == "unique":
-        raise Error("\x03NotImplemented: Array unique builtin not implemented")
-    raise Error("Unknown builtin '" + name + "'")
+        raise JinjaError(K_NOTIMPL, "NotImplemented: Array unique builtin not implemented")
+    raise jinja_error("Unknown builtin '" + name + "'")
 
 
-def _join(mut h: Heap, a: FuncArgs) raises -> Int:
+def _join(mut h: Heap, a: FuncArgs) raises JinjaError -> Int:
     a.ensure_count(1, 3)
     if not is_class(h, a.get_pos(0), C_ARRAY):
-        raise Error("join() first argument must be an array")
+        raise jinja_error("join() first argument must be an array")
     var val_delim = kwarg_or_pos(h, a, "d", 1)
     var attribute = kwarg_or_pos(h, a, "attribute", 2)
     var arr = as_array(h, a.get_pos(0))
     var attr_is_int = h.nodes[attribute].kind == V_INT
     if h.nodes[attribute].kind != V_UNDEF and h.nodes[attribute].kind != V_STRING and not attr_is_int:
-        raise Error("join() attribute must be string or integer")
+        raise jinja_error("join() attribute must be string or integer")
     var attr_int = h.nodes[attribute].i if attr_is_int else 0
     var delim = JString() if h.nodes[val_delim].kind == V_UNDEF else as_string(h, val_delim)
     var result = JString()
@@ -1117,24 +1118,24 @@ def _join(mut h: Heap, a: FuncArgs) raises -> Int:
                 val_arr = obj_at_strict(h, val_arr, attribute)
         var k = h.nodes[val_arr].kind
         if k != V_STRING and k != V_INT and k != V_FLOAT:
-            raise Error("join() can only join arrays of strings or numerics")
+            raise jinja_error("join() can only join arrays of strings or numerics")
         result.append(as_string(h, val_arr))
         if i < len(arr) - 1:
             result.append(delim)
     return h.string(result^)
 
 
-def _map(mut h: Heap, a: FuncArgs) raises -> Int:
+def _map(mut h: Heap, a: FuncArgs) raises JinjaError -> Int:
     a.ensure_count(2)
     if not is_class(h, a.get_pos(0), C_ARRAY):
-        raise Error("map: first argument must be an array")
+        raise jinja_error("map: first argument must be an array")
     if h.nodes[a.args[1]].kind != V_KWARG:
-        raise Error("\x03NotImplemented: map: filter-mapping not implemented")
+        raise JinjaError(K_NOTIMPL, "NotImplemented: map: filter-mapping not implemented")
     var val = a.get_pos(0)
     var attribute = kwarg_or_pos(h, a, "attribute", 1)
     var attr_is_int = h.nodes[attribute].kind == V_INT
     if h.nodes[attribute].kind != V_STRING and not attr_is_int:
-        raise Error("map: attribute must be string or integer")
+        raise jinja_error("map: attribute must be string or integer")
     var attr_int = h.nodes[attribute].i if attr_is_int else 0
     var default_val = a.get_kwarg(h, "default", h.undef())
     var out = List[Int]()
@@ -1152,13 +1153,13 @@ def _map(mut h: Heap, a: FuncArgs) raises -> Int:
 # --- objects -------------------------------------------------------------------------------------
 
 
-def _object_method(mut h: Heap, name: String, mut a: FuncArgs) raises -> Int:
+def _object_method(mut h: Heap, name: String, mut a: FuncArgs) raises JinjaError -> Int:
     if name == "get":
         a.ensure_count(2, 3)
         if h.nodes[a.get_pos(0)].kind != V_OBJECT:
-            raise Error("get: first argument must be an object")
+            raise jinja_error("get: first argument must be an object")
         if h.nodes[a.get_pos(1)].kind != V_STRING:
-            raise Error("get: second argument must be a string (key)")
+            raise jinja_error("get: second argument must be a string (key)")
         var default_val = h.none()
         if len(a.args) == 3:
             default_val = a.get_pos(2)
@@ -1221,5 +1222,5 @@ def _object_method(mut h: Heap, name: String, mut a: FuncArgs) raises -> Int:
         h.nodes[out].vals = vals^
         return out
     if name == "join":
-        raise Error("\x03NotImplemented: object join not implemented")
-    raise Error("Unknown builtin '" + name + "'")
+        raise JinjaError(K_NOTIMPL, "NotImplemented: object join not implemented")
+    raise jinja_error("Unknown builtin '" + name + "'")
