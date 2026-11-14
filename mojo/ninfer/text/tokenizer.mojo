@@ -11,6 +11,8 @@ Text is `List[UInt8]` throughout: decoded tokens are arbitrary bytes, not always
 from std.collections import Dict, List, Optional
 
 from ninfer.artifact.json import Json, parse_json, NULL, BOOL, UINT, NEG, FLOAT, STRING, ARRAY, OBJECT
+from ninfer.parsec.parsec import Parsec
+from ninfer.text.qwen_split import build_qwen_split, qwen_word_end
 from ninfer.text.unicode import (
     Unicode,
     CodepointSpan,
@@ -397,6 +399,7 @@ def _bpe_merge(
 
 struct Tokenizer(Movable):
     var unicode: Unicode
+    var split: Parsec  # the Qwen pre-tokenizer, as parser combinators
     var sentencepiece: Bool
     var decoded_token_bytes: List[List[UInt8]]
     var valid_token_ids: List[Bool]
@@ -421,6 +424,7 @@ struct Tokenizer(Movable):
         ):
             raise Error("embedded tokenizer resources are empty")
         self.unicode = Unicode()
+        self.split = build_qwen_split()
         self.sentencepiece = False
         self.decoded_token_bytes = List[List[UInt8]]()
         self.valid_token_ids = List[Bool]()
@@ -607,82 +611,7 @@ struct Tokenizer(Movable):
         return r.input_ids.copy()
 
     def _qwen_word_end(self, text: List[UInt8], begin: Int) raises -> Int:
-        var first = utf8_codepoint_at(text, begin, "Tokenizer::encode input")
-        var after_first = begin + first.length
-        var cp = first.value
-        if cp == 0x27:  # '
-            var suffixes = List[String]()
-            suffixes.append("s")
-            suffixes.append("t")
-            suffixes.append("re")
-            suffixes.append("ve")
-            suffixes.append("m")
-            suffixes.append("ll")
-            suffixes.append("d")
-            for suffix in suffixes:
-                if _ascii_ci_matches(text, after_first, suffix):
-                    return after_first + suffix.byte_length()
-        var has_next = after_first < len(text)
-        var next = utf8_codepoint_at(text, after_first, "Tokenizer::encode input").value if has_next else 0
-        if self._letter_or_mark(cp) or (
-            self._non_newline_non_letter_non_number(cp) and has_next and self._letter_or_mark(next)
-        ):
-            var end = begin if self._letter_or_mark(cp) else after_first
-            while end < len(text):
-                var v = utf8_codepoint_at(text, end, "Tokenizer::encode input")
-                if not self._letter_or_mark(v.value):
-                    break
-                end += v.length
-            return end
-        if self.unicode.is_number(cp):
-            return after_first
-        if (cp == 0x20 and has_next and self._non_space_non_letter_mark_number(next)) or self._non_space_non_letter_mark_number(cp):
-            var end = after_first if cp == 0x20 else begin
-            while end < len(text):
-                var v = utf8_codepoint_at(text, end, "Tokenizer::encode input")
-                if not self._non_space_non_letter_mark_number(v.value):
-                    break
-                end += v.length
-            while end < len(text):
-                var v = utf8_codepoint_at(text, end, "Tokenizer::encode input")
-                if not _is_newline(v.value):
-                    break
-                end += v.length
-            return end
-        if self.unicode.is_whitespace(cp):
-            var end = begin
-            var last_begin = begin
-            var last_newline_end = -1
-            var count = 0
-            while end < len(text):
-                var v = utf8_codepoint_at(text, end, "Tokenizer::encode input")
-                if not self.unicode.is_whitespace(v.value):
-                    break
-                last_begin = end
-                end += v.length
-                count += 1
-                if _is_newline(v.value):
-                    last_newline_end = end
-            if last_newline_end >= 0:
-                return last_newline_end
-            if end == len(text):
-                return end
-            return last_begin if count >= 2 else end
-        return after_first
-
-    def _letter_or_mark(self, cp: Int) -> Bool:
-        return self.unicode.is_letter(cp) or self.unicode.is_mark(cp)
-
-    def _non_newline_non_letter_non_number(self, cp: Int) -> Bool:
-        return not _is_newline(cp) and not self.unicode.is_letter(cp) and not self.unicode.is_number(cp)
-
-    def _non_space_non_letter_mark_number(self, cp: Int) -> Bool:
-        return (
-            not self.unicode.is_whitespace(cp)
-            and not self.unicode.is_letter(cp)
-            and not self.unicode.is_mark(cp)
-            and not self.unicode.is_number(cp)
-        )
+        return qwen_word_end(self.split, text, begin, self.unicode, "Tokenizer::encode input")
 
     def _append_normalized_bpe_ids(
         self,
@@ -979,26 +908,6 @@ def _equal_bytes(a: List[UInt8], b: List[UInt8]) -> Bool:
 def _bytes_equal_at(text: List[UInt8], pos: Int, needle: List[UInt8]) -> Bool:
     for i in range(len(needle)):
         if text[pos + i] != needle[i]:
-            return False
-    return True
-
-
-def _is_newline(cp: Int) -> Bool:
-    return cp == 0x0D or cp == 0x0A
-
-
-def _ascii_ci_matches(text: List[UInt8], offset: Int, suffix: String) -> Bool:
-    var s = suffix.as_bytes()
-    if offset + len(s) > len(text):
-        return False
-    for i in range(len(s)):
-        var a = Int(text[offset + i])
-        var b = Int(s[i])
-        if a >= 0x41 and a <= 0x5A:
-            a += 32
-        if b >= 0x41 and b <= 0x5A:
-            b += 32
-        if a != b:
             return False
     return True
 
