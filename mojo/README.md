@@ -42,7 +42,7 @@ reference in `tools/artifact`).
 
 ```
 mojo/ninfer/core/       weight.mojo (QType, QuantLayout, WeightGeometry)
-mojo/ninfer/text/jinja/ lexer.mojo
+mojo/ninfer/text/jinja/ error.mojo (JinjaError), lexer.mojo
 mojo/ninfer/text/       unicode.mojo, unicode_tables.mojo (generated from utf8proc), tokenizer.mojo
 mojo/ninfer/artifact/   json framing schema reader formats layouts binder
 mojo/tests/             dump_artifact.mojo  geometry_probe.mojo
