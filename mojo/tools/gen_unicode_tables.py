@@ -11,6 +11,7 @@ another Unicode database that may be a different version.
 from __future__ import annotations
 
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 
@@ -30,7 +31,9 @@ int main(void) {
     utf8proc_uint8_t *c = 0, *d = 0;
     utf8proc_ssize_t rc = utf8proc_map(in, n, &c, UTF8PROC_STABLE | UTF8PROC_COMPOSE);
     utf8proc_ssize_t rd = utf8proc_map(in, n, &d, UTF8PROC_STABLE | UTF8PROC_DECOMPOSE);
-    printf("%x %d %d ", cp, p->category, p->combining_class);
+    printf("%x %d %d %x %x %x %d %d ", cp, p->category, p->combining_class,
+           utf8proc_tolower(cp), utf8proc_toupper(cp), utf8proc_totitle(cp),
+           utf8proc_isupper(cp) ? 1 : 0, utf8proc_islower(cp) ? 1 : 0);
     for (int i = 0; i < rc; i++) printf("%02x", c[i]);
     printf(" ");
     for (int i = 0; i < rd; i++) printf("%02x", d[i]);
@@ -86,9 +89,18 @@ def main() -> None:
     ccc: dict[int, int] = {}
     nfd: dict[int, list[int]] = {}
     nfc: dict[int, list[int]] = {}
+    simple_case: dict[int, tuple[int, int, int]] = {}
+    is_upper: dict[int, int] = {}
+    is_lower: dict[int, int] = {}
     for line in lines[1:]:
-        cp_s, cat_s, ccc_s, c_hex, d_hex = line.split(" ")
+        cp_s, cat_s, ccc_s, lo_s, up_s, ti_s, isup_s, islo_s, c_hex, d_hex = line.split(" ")
         cp = int(cp_s, 16)
+        if (int(lo_s, 16), int(up_s, 16), int(ti_s, 16)) != (cp, cp, cp):
+            simple_case[cp] = (int(lo_s, 16), int(up_s, 16), int(ti_s, 16))
+        if isup_s == "1":
+            is_upper[cp] = 1
+        if islo_s == "1":
+            is_lower[cp] = 1
         if klass(int(cat_s)):
             cats[cp] = klass(int(cat_s))
         if int(ccc_s):
@@ -111,6 +123,15 @@ def main() -> None:
         head = prefix[0] if len(prefix) == 1 else primary[prefix]
         pairs.append((head, d[-1], cp))
     pairs.sort(key=lambda t: t[2])
+    jinja_src = (ROOT / "third_party" / "llama-jinja" / "jinja" / "unicode_data.h").read_text()
+    special = []
+    for m in re.finditer(r'\{0x([0-9A-Fa-f]+), "((?:\\x[0-9a-f]{2})+)", "((?:\\x[0-9a-f]{2})+)", "((?:\\x[0-9a-f]{2})+)"\}', jinja_src):
+        cp, lo, ti, up = m.group(1), *(m.group(i).replace("\\x", "") for i in (2, 3, 4))
+        special.append(f"{int(cp, 16):x} {lo} {ti} {up}")
+    def jinja_ranges(name: str) -> str:
+        body = jinja_src.split(f"{name}[] = {{")[1].split("};")[0]
+        return "\n".join(f"{int(a, 16):x} {int(b, 16):x} 1" for a, b in re.findall(r"\{0x([0-9A-Fa-f]+), 0x([0-9A-Fa-f]+)\}", body))
+    case_lines = "\n".join(f"{cp:x} {lo:x} {up:x} {ti:x}" for cp, (lo, up, ti) in sorted(simple_case.items()))
     pair_lines = "\n".join(f"{a:x} {b:x} {c:x}" for a, b, c in pairs)
     decomp_lines = "\n".join(f"{cp:x}:" + " ".join(f"{x:x}" for x in d) for cp, d in sorted(nfd.items()))
     OUT.write_text(
@@ -134,6 +155,27 @@ comptime DECOMPOSITIONS = """{decomp_lines}
 """
 
 comptime COMPOSITIONS = """{pair_lines}
+"""
+
+# Jinja string methods (src/text/jinja via third_party/llama-jinja/jinja/unicode.cpp).
+# SIMPLE_CASE: `cp lower upper title` where utf8proc's simple mapping differs from cp.
+# SPECIAL_CASE: `cp lower title upper`, UTF-8 bytes as hex, from SpecialCasing.txt.
+comptime SIMPLE_CASE = """{case_lines}
+"""
+
+comptime SPECIAL_CASE = """{chr(10).join(special)}
+"""
+
+comptime IS_UPPER_RANGES = """{ranges(is_upper)}
+"""
+
+comptime IS_LOWER_RANGES = """{ranges(is_lower)}
+"""
+
+comptime CASED_RANGES = """{jinja_ranges("cased")}
+"""
+
+comptime CASE_IGNORABLE_RANGES = """{jinja_ranges("case_ignorable")}
 """
 '''
     )

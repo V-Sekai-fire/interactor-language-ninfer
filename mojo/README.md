@@ -58,4 +58,4 @@ pixi run --manifest-path mojo/pixi.toml test
 
 The tests write artifacts with the production writer (`tools/artifact`), single-file and
 sharded, read them with the Mojo reader, and compare against the Python reference reader and
-against the C++ validation messages. Verified on Mojo 1.2.0 (stable) and a 1.3 nightly.
+against the C++ validation messages. Pinned to Mojo 1.1.0, the version the modular-community packages (EmberJson) are built for; verified there.
