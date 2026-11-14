@@ -99,6 +99,8 @@ TEXTS = [
     "<tool_call>\n<function=calc>\n<parameter=expression>\nx</parameter></function_calls>\n</function>\n</tool_call>",
     "<tool_call>\n<function=calc>\n<parameter=expression>\nx</parameter></function><function=calc>\n</function></tool_call>",
     "<tool_call>\n<function=calc>\n<parameter=expression>\nx</parameter></function> trailing words</tool_call>",
+    "<tool_call>\n<function=calc>\n<parameter=expression>\nx</parameter></think>\n</parameter>\n</function>\n</tool_call>",
+    "<tool_call>\n<function=calc>\n<parameter=expression>\nx</parameter></think>\ny</parameter>\n</function>\n</tool_call>",
     "<think>\nthinking about <tool_call> markers\n</think>\n" + CALL("calc", [("expression", "15")]),
     "<tool_call>\n<function=calc>\n<parameter>\nnoname</parameter>\n</function>\n</tool_call>",
     "<tool_call>\n<function=calc>\nstray text\n</function>\n</tool_call>",
@@ -215,3 +217,29 @@ def test_stream_decoder(oracle, tmp_path, forced):
         lines.append(case("stream", CONTRACTS[rng.choice(["calc", "typed", "none", "dup"])], forced, 64, chunks))
     got = run_both(oracle, tmp_path, lines)
     assert sum("T content" in x for x in got) > 800
+
+
+def test_structured_format(oracle, tmp_path):
+    """The constrained-decoding grammar, byte for byte, for every contract (including the ones the
+    C++ rejects: ambiguous duplicate definitions and parameter names holding '>')."""
+    gt = tool("gt", {"a>b": {"type": "string"}})
+    named = tool("tëst_é", {"é": {"type": "string"}, 'q"uote': {"type": "integer"}, "b\\s": {}})
+    contracts = dict(CONTRACTS, gt=[gt], named=[named, CALC], only_dup=[DUP_A, DUP_B], empty_name=[tool("x", {"": {"type": "string"}})])
+    lines = [case("format", c, "", 64, ["00"]) for c in contracts.values()]
+    lines += [case("format", [], "", 64, ["00"], enabled=False)]
+    got = run_both(oracle, tmp_path, lines)
+    assert sum(x.startswith("format ") and len(x) > 20 for x in got) >= 4
+    assert sum(x == "EXC" for x in got) >= 3
+
+
+def test_deeply_nested_values(oracle, tmp_path):
+    """`Json::accept` has no depth limit; neither does the Mojo reader on the tool-call path."""
+    texts = []
+    for depth in (100, 511, 513, 5000, 60000):
+        for open_, close in (("[", "]"), ('{"a":', "}")):
+            value = open_ * depth + "1" + close * depth
+            texts.append(f"<tool_call>\n<function=typed>\n<parameter=a>\n{value}\n</parameter>\n</function>\n</tool_call>".encode())
+    texts.append(b"<tool_call>\n<function=typed>\n<parameter=a>\n" + b"[" * 3000 + b"\n</parameter>\n</function>\n</tool_call>")
+    lines = [case("parse", CONTRACTS["typed"], "", 64, [hx(t)]) for t in texts]
+    got = run_both(oracle, tmp_path, lines)
+    assert sum(x.startswith("parse resp=1") for x in got) == len(texts)

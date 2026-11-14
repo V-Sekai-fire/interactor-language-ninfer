@@ -8,6 +8,7 @@ from ninfer.frontend.tool_call_parser import (
     ToolCallOutputDecoder,
     build_tool_call_output_contract,
     parse_qwen_tool_call_output,
+    structured_tool_call_format,
 )
 
 
@@ -75,6 +76,10 @@ def _run(line: String, mut out: String) raises -> String:
     var forced = String(unsafe_from_utf8=_unhex(f[2]))
     var contract = build_tool_call_output_contract(tools, f[1] == "1", forced)
     var max_len = atol(f[3])
+    if f[0] == "format":
+        if not contract.enabled:
+            return "disabled"
+        return "format " + _hex_str(structured_tool_call_format(contract))
     if f[0] == "parse":
         if not contract.enabled:
             return "disabled"
