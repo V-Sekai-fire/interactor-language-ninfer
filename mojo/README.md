@@ -26,8 +26,8 @@ Rules for the split:
 | 2 | Formats, layouts, tensor geometry, binder | `src/artifact/{formats,layouts,binder}`, `src/core/weight*` | #8 (Host side; device placement waits for step 4) |
 | 3 | Unicode: UTF-8, categories, NFC | `src/text/unicode.*` | #9 |
 | 3b | BPE tokenizer | `src/models/qwen3_5/frontend/tokenizer.*` | #10 |
-| 3c | Jinja lexer | `third_party/llama-jinja/jinja/lexer.*` | this PR |
-| 3d | Jinja parser, values, runtime, filters; `JinjaTemplate` with provenance | `llama-jinja/jinja/*`, `src/text/jinja.*` | |
+| 3c | Jinja lexer | `third_party/llama-jinja/jinja/lexer.*` | #11 |
+| 3d | Jinja parser, values, builtins, runtime; `JinjaTemplate` with provenance | `llama-jinja/jinja/*`, `src/text/jinja.*` | this PR |
 | 3e | Chat template builder and tool-call parser | `frontend/chat_template.*`, `tool_call_parser.*` | |
 | 4 | Materializer and host transcode | `src/artifact/{materializer,transcode}` | |
 | 5 | Ternary and groupwise-int matmul kernels (Mojo GPU) | `src/ops` | |
@@ -42,6 +42,7 @@ reference in `tools/artifact`).
 
 ```
 mojo/ninfer/core/       weight.mojo (QType, QuantLayout, WeightGeometry)
+mojo/ninfer/parsec/       parsec.mojo (NimbleParsec combinators)
 mojo/ninfer/text/jinja/ error.mojo (JinjaError), lexer.mojo
 mojo/ninfer/text/       unicode.mojo, unicode_tables.mojo (generated from utf8proc), tokenizer.mojo
 mojo/ninfer/artifact/   json framing schema reader formats layouts binder

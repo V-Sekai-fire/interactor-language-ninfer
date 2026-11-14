@@ -351,36 +351,13 @@ struct _Parser(Movable):
 
 
 def _valid_utf8(b: List[UInt8]) -> Bool:
-    """The rules of `utf8proc_iterate`, which nlohmann applies to every string."""
-    var i = 0
-    var n = len(b)
-    while i < n:
-        var c = Int(b[i])
-        if c < 0x80:
-            i += 1
-        elif c < 0xC2 or c > 0xF4:
-            return False
-        elif c < 0xE0:
-            if i + 1 >= n or (b[i + 1] & 0xC0) != 0x80:
-                return False
-            i += 2
-        elif c < 0xF0:
-            if i + 2 >= n or (b[i + 1] & 0xC0) != 0x80 or (b[i + 2] & 0xC0) != 0x80:
-                return False
-            if c == 0xE0 and b[i + 1] < 0xA0:
-                return False
-            if c == 0xED and b[i + 1] > 0x9F:
-                return False
-            i += 3
-        else:
-            if i + 3 >= n or (b[i + 1] & 0xC0) != 0x80 or (b[i + 2] & 0xC0) != 0x80 or (b[i + 3] & 0xC0) != 0x80:
-                return False
-            if c == 0xF0 and b[i + 1] < 0x90:
-                return False
-            if c == 0xF4 and b[i + 1] > 0x8F:
-                return False
-            i += 4
-    return True
+    """The standard library's validation, which agrees with `utf8proc_iterate` (nlohmann applies
+    those rules to every string)."""
+    try:
+        _ = String(from_utf8=b)
+        return True
+    except:
+        return False
 
 
 def _append_utf8(mut out: List[UInt8], cp: Int):
