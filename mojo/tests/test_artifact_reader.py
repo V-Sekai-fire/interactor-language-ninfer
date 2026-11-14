@@ -21,6 +21,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from tools.artifact.framing import HEADER  # noqa: E402
+from tools.artifact.layouts import encoded_size, row_split_geometry  # noqa: E402
 from tools.artifact.reader import Artifact  # noqa: E402
 from tools.artifact.schema import ResourceSpec, TensorSpec  # noqa: E402
 from tools.artifact.writer import ArtifactWriter  # noqa: E402
@@ -54,8 +55,14 @@ def build(path: Path, limit: int | None):
     specs = [
         TensorSpec("matrix", (130, 130), "bf16", "contiguous_le_v1"),
         TensorSpec("scale", (), "fp32", "contiguous_le_v1"),
+        TensorSpec("table", (5,), "int32", "contiguous_le_v1"),
+        TensorSpec("q4", (4, 200), "q4_g64_fp16", "row_split_k128_v1"),
+        TensorSpec("blocks", (3, 64), "gguf_q4_0", "gguf_blocks_v1"),
         ResourceSpec("template", len(blob)),
     ]
+    table = struct.pack("<5i", 1, -2, 3, -2147483648, 2147483647)
+    q4 = bytes((i * 13 + 5) % 256 for i in range(encoded_size("row_split_k128_v1", "q4_g64_fp16", (4, 200))))
+    blocks = bytes((i * 7 + 3) % 256 for i in range(encoded_size("gguf_blocks_v1", "gguf_q4_0", (3, 64))))
     with ArtifactWriter(
         path,
         specs,
@@ -68,6 +75,10 @@ def build(path: Path, limit: int | None):
         },
         bindings={
             "whole": {"object": "matrix"},
+            "q4": {"object": "q4"},
+            "blocks": {"object": "blocks"},
+            "scalar": {"object": "scale"},
+            "table": {"object": "table"},
             "reordered": {
                 "parts": [
                     {"object": "matrix", "range": [16770, 16900]},
@@ -87,16 +98,20 @@ def build(path: Path, limit: int | None):
     ) as writer:
         writer.write_object("matrix", matrix)
         writer.write_object("scale", scale)
+        writer.write_object("table", table)
+        writer.write_object("q4", q4)
+        writer.write_object("blocks", blocks)
         writer.write_object("template", blob)
         directory = writer.directory.to_json()
-    return directory, {"matrix": matrix, "scale": scale, "template": blob}
+    return directory, {"matrix": matrix, "scale": scale, "template": blob, "table": table,
+                       "q4": q4, "blocks": blocks}
 
 
 @pytest.mark.parametrize("limit", [None, 12288])
 def test_mojo_reader_matches_python_reader(tmp_path, limit):
     path = tmp_path / "t.ninfer"
     directory, payloads = build(path, limit)
-    run, out = dump(path, "matrix", "scale", "template")
+    run, out = dump(path, "matrix", "scale", "template", "table", "q4", "blocks")
     assert run.returncode == 0, text(run)
     with Artifact(path) as ref:
         assert out["payload_bytes"] == [[str(ref.payload_bytes)]]
@@ -120,6 +135,27 @@ def test_mojo_reader_matches_python_reader(tmp_path, limit):
     assert out["component"][1][2] == "chat_template.jinja=template,"
     reordered = [r for r in out["binding"] if r[0] == "reordered"][0]
     assert reordered == ["reordered", "False", "260", "matrix[16770:16900],matrix[130:260],"]
+    # Geometry, interpreted on request, matches the reference sizes.
+    geo = {r[0]: r for r in out["geometry"]}
+    assert geo["matrix"][1:5] == ["bf16", "contiguous_le_v1", str(130 * 130), str(130 * 130 * 2)]
+    g = row_split_geometry("q4_g64_fp16", (4, 200))
+    q4 = geo["q4"]
+    assert q4[1:3] == ["q4_g64_fp16", "row_split_k128_v1"]
+    assert [int(v) for v in q4[4:8]] == [g.payload_bytes, g.k_pad, 64, g.base_row_bytes]
+    assert int(geo["blocks"][4]) == encoded_size("gguf_blocks_v1", "gguf_q4_0", (3, 64))
+    assert "geometry_error" not in out
+    # Host values read through the Binder (single and sharded files, part order preserved).
+    values = {r[0]: r for r in out["values"]}
+    assert values["whole"] == ["whole", "bf16", str(130 * 130), payloads["matrix"][: 130 * 130 * 2].hex()]
+    assert values["scalar"] == ["scalar", "fp32", "1", payloads["scale"].hex()]
+    assert values["table"] == ["table", "int32", "5", payloads["table"].hex()]
+    full = payloads["matrix"]
+    want = full[16770 * 2 : 16900 * 2] + full[130 * 2 : 260 * 2]
+    assert values["reordered"] == ["reordered", "bf16", "260", want.hex()]
+    assert "q4" not in values and "blocks" not in values  # quantized: not Host values
+    assert {r[0] for r in out["parameter"]} == {"whole", "q4", "blocks", "scalar", "table", "reordered"}
+    assert out["resource_bytes"] == [["text", "chat_template.jinja", "template"]]
+    assert out["missing_parameter"] == [["missing", "logical", "parameter", "nope"]]
     whole = [r for r in out["binding"] if r[0] == "whole"][0]
     assert whole == ["whole", "True", str(130 * 130), f"matrix[0:{130 * 130}],"]
 
@@ -197,3 +233,25 @@ def test_mojo_rejects_a_foreign_continuation(tmp_path):
     run, _ = dump(path, "matrix")
     assert run.returncode != 0
     assert "continuation header does not belong to this entry" in text(run)
+
+
+@pytest.mark.parametrize(
+    "mutate, message",
+    [
+        (lambda d: d["objects"][0].update(format="fp32"), "w: encoded size or object alignment differs from layout"),
+        (lambda d: d["objects"][0].update(format="zzz"), "w: unknown tensor format: zzz"),
+        (lambda d: d["objects"][0].update(layout="row_split_panel4_v1"), "w: unknown tensor layout: row_split_panel4_v1"),
+        (lambda d: d["objects"][0].update(layout="row_split_k128_v1"), "w: RowSplit requires a grouped integer format"),
+        (lambda d: d["objects"][0].update(divisors=2), "w: only an NVFP4 plane carries more than one divisor"),
+    ],
+)
+def test_bad_tensors_fail_only_when_requested(tmp_path, mutate, message):
+    # The directory parses; the tensor is interpreted (and rejected) on request, as in C++.
+    path = tmp_path / "s.ninfer"
+    make_small(path)
+    rewrite(path, mutate)
+    run, out = dump(path)
+    assert run.returncode == 0, text(run)
+    assert out["geometry_error"] == [["w"] + message.split(" ")]
+    assert [r[0] for r in out["parameter_error"]] == ["b"]
+    assert message in " ".join(out["parameter_error"][0])

@@ -22,8 +22,8 @@ Rules for the split:
 
 | # | Piece | C++ source | Status |
 |---|---|---|---|
-| 1 | Artifact reader: framing, directory, shards, exact range reads | `src/artifact/{framing,schema,reader}` | this PR |
-| 2 | Formats, layouts, tensor geometry, binder | `src/artifact/{formats,layouts,binder,views}` | |
+| 1 | Artifact reader: framing, directory, shards, exact range reads | `src/artifact/{framing,schema,reader}` | #7 |
+| 2 | Formats, layouts, tensor geometry, binder | `src/artifact/{formats,layouts,binder}`, `src/core/weight*` | this PR (Host side; device placement waits for step 4) |
 | 3 | Tokenizer and chat template | `src/text`, `src/models/qwen3_5/frontend` | |
 | 4 | Materializer and host transcode | `src/artifact/{materializer,transcode}` | |
 | 5 | Ternary and groupwise-int matmul kernels (Mojo GPU) | `src/ops` | |
@@ -37,8 +37,10 @@ reference in `tools/artifact`).
 ## Layout and tests
 
 ```
-mojo/ninfer/artifact/   json.mojo  framing.mojo  schema.mojo  reader.mojo
-mojo/tests/             dump_artifact.mojo  test_artifact_reader.py
+mojo/ninfer/core/       weight.mojo (QType, QuantLayout, WeightGeometry)
+mojo/ninfer/artifact/   json framing schema reader formats layouts binder
+mojo/tests/             dump_artifact.mojo  geometry_probe.mojo
+                        test_artifact_reader.py  test_geometry.py
 ```
 
 ```sh

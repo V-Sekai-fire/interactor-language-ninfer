@@ -15,6 +15,9 @@ from ninfer.artifact.framing import (
     part_magic,
     read_u64_le,
 )
+from ninfer.artifact.formats import RAW_BYTES_ENCODING
+from ninfer.artifact.layouts import describe_tensor
+from ninfer.core.weight import WeightGeometry
 from ninfer.artifact.schema import (
     Directory,
     checked_add,
@@ -77,6 +80,7 @@ struct Reader(Movable):
     var file_bytes: UInt64
     var sizes: List[UInt64]  # per-file byte length, 0 until the file is validated
     var validated: List[Bool]
+    var geometries: List[Optional[WeightGeometry]]
 
     def __init__(out self, path: Path) raises:
         self.entry = path
@@ -136,6 +140,9 @@ struct Reader(Movable):
         for _ in range(len(self.directory.files)):
             self.sizes.append(0)
             self.validated.append(False)
+        self.geometries = List[Optional[WeightGeometry]]()
+        for _ in range(len(self.directory.objects)):
+            self.geometries.append(None)
         self.sizes[0] = size
         self.validated[0] = True
 
@@ -173,12 +180,19 @@ struct Reader(Movable):
             self.validated[index] = True
         return path
 
-    def validate_object(self, handle: Int) raises:
+    def geometry(mut self, handle: Int) raises -> WeightGeometry:
+        """Encoded-parent geometry of a tensor, validated on first request and then cached."""
+        self.directory.check_tensor(handle)
+        if not self.geometries[handle]:
+            self.geometries[handle] = describe_tensor(self.directory.objects[handle])
+        return self.geometries[handle].value().copy()
+
+    def validate_object(mut self, handle: Int) raises:
         self.directory.check_handle(handle)
-        ref obj = self.directory.objects[handle]
-        if not obj.is_tensor and obj.encoding != "raw_bytes_v1":
-            raise Error(obj.id + ": unsupported resource encoding")
-        # Tensor geometry (format x layout x shape) arrives with the materializer port.
+        if self.directory.objects[handle].is_tensor:
+            _ = self.geometry(handle)
+        elif self.directory.objects[handle].encoding != RAW_BYTES_ENCODING:
+            raise Error(self.directory.objects[handle].id + ": unsupported resource encoding")
 
     def segments(self, offset: UInt64, bytes: UInt64) raises -> List[ReadSegment]:
         ref d = self.directory

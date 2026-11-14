@@ -7,6 +7,7 @@ as nodes of `Directory.doc`; architecture parsers read them from there.
 
 from std.collections import Dict, List, Optional
 
+from ninfer.core.weight import weight_element_count
 from ninfer.artifact.json import (
     Json,
     NULL,
@@ -237,18 +238,6 @@ struct Directory(Movable):
     def check_component(self, name: String) raises:
         if name not in self.components:
             raise Error("missing component " + name)
-
-
-def weight_element_count(shape: List[UInt64]) raises -> UInt64:
-    """Mirrors `core/weight_view.cpp`; unlike `parse_shape` it rejects zero dimensions."""
-    if len(shape) > MAX_RANK:
-        raise Error("weight rank exceeds 16")
-    var count = UInt64(1)
-    for d in shape:
-        if d == 0:
-            raise Error("weight dimensions must be positive")
-        count = checked_mul(count, d, "weight element count")
-    return count
 
 
 def _sorted(var names: List[String]) -> List[String]:
