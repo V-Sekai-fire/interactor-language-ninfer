@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
-# The ternary linear in Lean 4 and Slang: the kernels against the reference model, and the
-# committed kernels against what Lean emits.
+# The linear matmuls in Lean 4 and Slang: the kernels against the reference model, the committed
+# kernels against what Lean emits, and the model against weights that the engine builds.
 #
 # macOS arm64: the committed C++ emissions contain the Slang prelude exactly as the macOS slangc
 # writes it, so `kernels/gen.exs --check` compares like with like.
@@ -14,9 +14,23 @@ name: lean-kernels
 on:
   push:
     branches: [main, 'ci/**']
-    paths: ['lean/**', '.github/workflows/lean-kernels.yml']
+    paths:
+      - 'lean/**'
+      - '.github/workflows/lean-kernels.yml'
+      # the fixture code of the engine, which tests/layout/run.exs includes
+      - 'tests/ops/quantized_weight.h'
+      - 'src/core/weight.h'
+      - 'src/core/tensor.h'
+      - 'src/core/dtype.h'
   pull_request:
-    paths: ['lean/**', '.github/workflows/lean-kernels.yml']
+    paths:
+      - 'lean/**'
+      - '.github/workflows/lean-kernels.yml'
+      # the fixture code of the engine, which tests/layout/run.exs includes
+      - 'tests/ops/quantized_weight.h'
+      - 'src/core/weight.h'
+      - 'src/core/tensor.h'
+      - 'src/core/dtype.h'
   workflow_dispatch:
 
 concurrency:
@@ -51,6 +65,8 @@ jobs:
         run: lake build
       - name: number formats against the host compiler
         run: elixir tests/num/run.exs
+      - name: weights of the engine against the model
+        run: elixir tests/layout/run.exs
       - name: committed kernels are what Lean emits
         run: elixir kernels/gen.exs --check
       - name: kernels against the model, controls, targets
