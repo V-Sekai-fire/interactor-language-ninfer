@@ -239,5 +239,4 @@ work runs on rented hosts through `scripts/pods` ([pods](scripts/pods/README.md)
 
 ## Commits
 
-Create commits only when requested. Use Conventional Commit subjects with concise lowercase types
-such as `feat`, `fix`, `perf`, `bench`, `test`, `build`, `refactor`, `docs`, or `chore`.
+Create commits only when requested.
