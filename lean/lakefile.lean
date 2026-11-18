@@ -16,3 +16,7 @@ require LeanSlang from git
 -- Ninfer.Num against the host compiler's hardware conversions (tests/num/run.exs).
 lean_exe ninfer_num where
   root := `NumCheck
+
+-- Writes the kernels as Slang for kernels/gen.exs.
+lean_exe emit_ninfer where
+  root := `EmitKernels
