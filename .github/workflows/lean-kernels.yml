@@ -6,9 +6,9 @@
 # writes it, so `kernels/gen.exs --check` compares like with like.
 #
 # The C++ host runs every kernel. A kernel with group barriers runs as a DAG of executes, one per
-# process. This job does not run Metal, because a hosted runner has no Metal device we can rely on.
-# The run prints a NOT RUN line for it. The two largest shapes (34816x5120 and 5120x6144) are
-# skipped to bound the run time. `elixir tests/kernels/run.exs --metal` runs everything on a Mac.
+# process. The macos-15 runner has a Metal device (an Apple Paravirtual device), so `--metal` also
+# runs every kernel on it. The two largest shapes (34816x5120 and 5120x6144) are skipped to bound
+# the run time. `elixir tests/kernels/run.exs --metal` without `--skip-big` runs everything.
 name: lean-kernels
 
 on:
@@ -69,5 +69,5 @@ jobs:
         run: elixir tests/layout/run.exs
       - name: committed kernels are what Lean emits
         run: elixir kernels/gen.exs --check
-      - name: kernels against the model, controls, targets
-        run: elixir tests/kernels/run.exs --skip-big
+      - name: kernels against the model, controls, targets, on the C++ host and on Metal
+        run: elixir tests/kernels/run.exs --metal --skip-big

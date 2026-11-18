@@ -104,7 +104,7 @@ The run fails if one of them passes. `tests/num/run.exs` plants two more faults:
 - The integer formats have the A16 route only, as the engine tests them.
 - No check measures speed.
 - The model does not fix the `exp` of `silu_mul`. The check allows one bfloat16 step on a rare element.
-- Metal runs only on macOS. The CI workflow runs the C++ host only.
+- Metal runs only on macOS. The CI workflow runs the C++ host and Metal on a macOS runner. It skips the two largest shapes.
 
 ## License
 
