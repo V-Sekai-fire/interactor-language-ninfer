@@ -5,6 +5,9 @@ the server: the OpenAI, Anthropic and llama.cpp HTTP surfaces run on the BEAM an
 engine through NIFs built with [mojoler](https://github.com/thanos/mojoler). No C or C++ layer
 sits between them.
 
+The matmul kernels are the exception. They are a Lean 4 reference model and Slang kernels, in
+[`lean/`](../lean/README.md).
+
 ```
 HTTP clients ──► Elixir server (BEAM) ──mojoler NIF──► Mojo engine ──► CPU / GPU
                  routing, sessions,                    artifact, tokenizer,
@@ -30,7 +33,7 @@ Rules for the split:
 | 3d | Jinja parser, values, builtins, runtime; `JinjaTemplate` with provenance | `llama-jinja/jinja/*`, `src/text/jinja.*` | done |
 | 3e | Tool-call parser and decoder; chat template renderer (text, media, tools, tool calls, thinking, forced calls, continuation, message and cache boundaries, rewrite checkpoint) | `frontend/tool_call_parser.*`, `chat_template.*`, `prompt_layout.*` | done |
 | 4 | Materializer and host transcode | `src/artifact/{materializer,transcode}` | |
-| 5 | Ternary and groupwise-int matmul kernels (Mojo GPU, runs on Apple silicon through Metal) | `src/ops/linear` | ternary: this PR |
+| 5 | Ternary and groupwise-int matmul kernels (Lean 4 model and Slang kernels; run on Apple silicon through Metal and on the CPU) | `src/ops/linear` | ternary: in `lean/` |
 | 6 | Gated DeltaNet layer, RV32IM in-weights computer | `src/ops`, `src/models/qwen3_5` | |
 | 7 | Qwen3.5 model, KV cache, sampler, speculative decode | `src/models`, `src/runtime` | |
 | 8 | mojoler NIF surface and the Elixir server | `src/serve` | |
@@ -44,7 +47,6 @@ reference in `tools/artifact`).
 mojo/ninfer/core/       weight.mojo (QType, QuantLayout, WeightGeometry)
 mojo/ninfer/combinator/   combinator.mojo (parser combinators, NimbleParsec vocabulary)
 mojo/ninfer/text/jinja/ error.mojo (JinjaError), lexer.mojo
-mojo/ninfer/ops/        linear_t2.mojo (GPU kernels; needs the `max` package)
 mojo/ninfer/text/       unicode.mojo, unicode_tables.mojo (generated from utf8proc), tokenizer.mojo
 mojo/ninfer/artifact/   json framing schema reader formats layouts binder
 mojo/tests/             dump_artifact.mojo  geometry_probe.mojo
