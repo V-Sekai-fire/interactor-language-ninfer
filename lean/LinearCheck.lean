@@ -10,6 +10,7 @@ import Ninfer.Ops.Linear.Kernels
     ninfer_linear plan                             one line per (case, variant): <case> <variant> <kernel> <cpu|gpu>
     ninfer_linear write <dir> <case> [<control>]   inputs, expected outputs and a host script per variant
     ninfer_linear check <dir> <variant>            judge `<variant>.*.out` against the expectation
+    ninfer_linear layout <dir> <format>            the model against a weight the engine's fixtures built
     ninfer_linear selftest                         the checks that need no host
 
 A *host* (`tests/kernels/cpu_host.cpp`, `tests/kernels/metal_host.swift`) only dispatches: it reads
@@ -672,6 +673,94 @@ def selftest : IO UInt32 := do
   fails := fails + (← dagSelftest)
   return (if fails == 0 then 0 else 1)
 
+/-! ## layout: the model against the engine's own weight -/
+
+/-- A little-endian unsigned integer of `n` bytes at `off`. -/
+def leNat (b : ByteArray) (off n : Nat) : Nat :=
+  (List.range n).foldl (fun a i => a ||| ((b.get! (off + i)).toNat <<< (8 * i))) 0
+
+/-- The number under `key` in `key value` lines. -/
+def keyNat (txt key : String) : Option Nat :=
+  (txt.splitOn "\n").findSome? fun l =>
+    match l.splitOn " " with
+    | [k, v] => if k == key then v.toNat? else none
+    | _ => none
+
+/-- Hold the model to a weight the engine's own fixture code built and decoded
+(`tests/layout/oracle.cpp`): the payload, its planes and offsets, the engine's logical weights, and
+its FP64 dot products. The model must read the same weights bit for bit, see zero codes and unscaled
+groups past K, pack its codes into the engine's bytes, and reproduce the engine's reference. -/
+def layoutCheck (dir name : String) : IO UInt32 := do
+  let some f := Fmt.ofName name | do IO.eprintln s!"layout: unknown format {name}"; return 2
+  if f.bits == 2 then
+    IO.eprintln "layout: the signed-integer formats only"
+    return 2
+  let txt ← IO.FS.readFile s!"{dir}/layout.txt"
+  let get (key : String) : Nat := (keyNat txt key).getD 0
+  let n := get "n"
+  let k := get "k"
+  let paddedK := get "paddedK"
+  let tokens := get "tokens"
+  let groups := paddedK / f.group
+  let payload ← IO.FS.readBinFile s!"{dir}/payload.bin"
+  let logicalB ← IO.FS.readBinFile s!"{dir}/logical.bin"
+  let xB ← IO.FS.readBinFile s!"{dir}/x.bin"
+  let dotB ← IO.FS.readBinFile s!"{dir}/dot.bin"
+  -- the interface first: the engine's group size and plane sizes are the ones the model assumes
+  let planesOk :=
+    get "group" == f.group && paddedK % groupK == 0 && k ≤ paddedK
+    && get "codeBytes" == n * groups * codeBytes && get "highBytes" == n * groups * f.hiBytes
+    && get "scaleBytes" == n * groups * 2 && logicalB.size == 8 * n * k && xB.size == 4 * tokens * k
+    && dotB.size == 8 * tokens * n
+  if !planesOk then
+    IO.println s!"FAIL  layout {name}: the engine's planes are not the model's (group {get "group"}, code bytes {get "codeBytes"}, high bytes {get "highBytes"}, scale bytes {get "scaleBytes"})"
+    return 1
+  let q := payload.extract 0 (get "codeBytes")
+  let qh := if f.hiBytes == 0 then ByteArray.empty else payload.extract (get "highOffset") (get "highOffset" + get "highBytes")
+  let s : Array UInt16 := (List.range (n * groups)).toArray.map fun i => (leNat payload (get "scaleOffset" + 2 * i) 2).toUInt16
+  let w : Weight := { n, k, groups, q, s, fmt := f, qh }
+  -- 1. every weight, bit for bit
+  let mut bad1 := 0
+  let mut nonzero := 0
+  let mut first := ""
+  for row in [0:n] do
+    for col in [0:k] do
+      let want := (leNat logicalB (8 * (row * k + col)) 8).toUInt64
+      let got := Float.ofInt (w.value row (col / f.group) (col % f.group)) * (f16ToF32 s[row * groups + col / f.group]!).toFloat
+      if got != 0 then nonzero := nonzero + 1
+      if got.toBits != want then
+        bad1 := bad1 + 1
+        if first == "" then first := s!"row {row} column {col}: model {got}, engine {Float.ofBits want}"
+  -- 2. past K: zero codes, and a group wholly past K has the scale 0
+  let mut bad2 := 0
+  for row in [0:n] do
+    for col in [k:paddedK] do
+      if w.value row (col / f.group) (col % f.group) != 0 then bad2 := bad2 + 1
+    for g in [0:groups] do
+      if g * f.group ≥ k && s[row * groups + g]! != 0 then bad2 := bad2 + 1
+  -- 3. the model's codes, packed again, are the engine's bytes
+  let mut bad3 := 0
+  for row in [0:n] do
+    for g in [0:groups] do
+      let gi := row * groups + g
+      let (nib, hi) := packGroup f ((List.range f.group).toArray.map fun i => w.value row g i)
+      if nib.data != (q.extract (gi * codeBytes) ((gi + 1) * codeBytes)).data then bad3 := bad3 + 1
+      else if f.hiBytes > 0 && hi.data != (qh.extract (gi * f.hiBytes) ((gi + 1) * f.hiBytes)).data then bad3 := bad3 + 1
+  -- 4. the FP64 reference against the engine's `dot_fp64`
+  let x : FloatArray := FloatArray.mk ((List.range (tokens * k)).toArray.map fun i =>
+    (Float32.ofBits (leNat xB (4 * i) 4).toUInt32).toFloat)
+  let ref := ref64 w x tokens 0 n
+  let mut bad4 := 0
+  let mut dotNonzero := 0
+  for i in [0:tokens * n] do
+    if ref.get! i != 0 then dotNonzero := dotNonzero + 1
+    if (ref.get! i).toBits != (leNat dotB (8 * i) 8).toUInt64 then bad4 := bad4 + 1
+  -- a comparison against a mostly-zero reference proves nothing
+  let informative := nonzero * 2 > n * k && dotNonzero * 2 > tokens * n
+  let ok := bad1 == 0 && bad2 == 0 && bad3 == 0 && bad4 == 0 && informative
+  IO.println s!"{if ok then "PASS" else "FAIL"}  layout {name} {n}x{k}: {n * k} weights, {bad1} differ{if first == "" then "" else " (" ++ first ++ ")"}; past K {bad2} wrong; repack of {n * groups} groups {bad3} differ; {tokens * n} dot products {bad4} differ; informative {informative} ({nonzero} nonzero weights)"
+  return (if ok then 0 else 1)
+
 /-! ## main -/
 
 def main (args : List String) : IO UInt32 := do
@@ -690,7 +779,8 @@ def main (args : List String) : IO UInt32 := do
     | some c => writeCase dir c (some control)
     | none => IO.eprintln s!"unknown case {id}"; return 2
   | ["check", dir, variant] => check dir variant
+  | ["layout", dir, name] => layoutCheck dir name
   | ["selftest"] => selftest
   | _ =>
-    IO.eprintln "usage: ninfer_linear plan | write <dir> <case> [flip-row] | check <dir> <variant> | selftest"
+    IO.eprintln "usage: ninfer_linear plan | write <dir> <case> [flip-row] | check <dir> <variant> | layout <dir> <q4|q5|q6|q8> | selftest"
     return 2
