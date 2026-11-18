@@ -1,0 +1,56 @@
+# SPDX-License-Identifier: Apache-2.0
+# The ternary linear in Lean 4 and Slang: the kernels against the reference model, and the
+# committed kernels against what Lean emits.
+#
+# macOS arm64: the committed C++ emissions contain the Slang prelude exactly as the macOS slangc
+# writes it, so `kernels/gen.exs --check` compares like with like.
+#
+# The C++ host runs every kernel. A kernel with group barriers runs as a DAG of executes, one per
+# process. This job does not run Metal, because a hosted runner has no Metal device we can rely on.
+# The run prints a NOT RUN line for it. The two largest shapes (34816x5120 and 5120x6144) are
+# skipped to bound the run time. `elixir tests/kernels/run.exs --metal` runs everything on a Mac.
+name: lean-kernels
+
+on:
+  push:
+    branches: [main, 'ci/**']
+    paths: ['lean/**', '.github/workflows/lean-kernels.yml']
+  pull_request:
+    paths: ['lean/**', '.github/workflows/lean-kernels.yml']
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  kernels:
+    runs-on: macos-14
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: lean
+    steps:
+      - uses: actions/checkout@v7
+      - name: Lean
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh | sh -s -- -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+      - name: slangc 2026.13
+        run: |
+          curl -sSfL -o slang.tar.gz https://github.com/shader-slang/slang/releases/download/v2026.13/slang-2026.13-macos-aarch64.tar.gz
+          mkdir -p "$HOME/slang" && tar -xzf slang.tar.gz -C "$HOME/slang"
+          echo "$HOME/slang/bin" >> "$GITHUB_PATH"
+      - name: Elixir and the SPIR-V validator
+        run: brew install elixir spirv-tools
+      - name: lake build
+        run: lake build
+      - name: number formats against the host compiler
+        run: elixir tests/num/run.exs
+      - name: committed kernels are what Lean emits
+        run: elixir kernels/gen.exs --check
+      - name: kernels against the model, controls, targets
+        run: elixir tests/kernels/run.exs --skip-big
