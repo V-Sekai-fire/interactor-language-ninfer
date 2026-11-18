@@ -1,0 +1,435 @@
+#include <metal_stdlib>
+#include <metal_math>
+#include <metal_texture>
+using namespace metal;
+
+#line 35 "slang/t2_a16_serial.slang"
+float f16ToF32_0(uint h_0)
+{
+
+#line 36
+    uint sg_0 = (h_0 & 32768U) << 16U;
+    uint e_0 = (h_0 >> 10U) & 31U;
+    uint m_0 = h_0 & 1023U;
+    if(e_0 == 0U)
+    {
+
+#line 40
+        if(m_0 == 0U)
+        {
+
+#line 41
+            return (as_type<float>((sg_0)));
+        }
+
+        return (as_type<float>(((as_type<uint>((float(m_0) * 5.9604644775390625e-08f))) | sg_0)));
+    }
+    if(e_0 == 31U)
+    {
+
+#line 47
+        return (as_type<float>(((sg_0 | 2139095040U) | (m_0 << 13U))));
+    }
+    return (as_type<float>(((sg_0 | ((e_0 + 112U) << 23U)) | (m_0 << 13U))));
+}
+
+int t2Decode_0(uint code_0)
+{
+
+#line 53
+    uint mg_0 = code_0 & 1U;
+
+    return int(mg_0) - int(2) * int(mg_0 & ((code_0 >> 1U) & 1U));
+}
+
+
+#line 23
+float bf16ToF32_0(uint h_1)
+{
+
+#line 24
+    return (as_type<float>((h_1 << 16U)));
+}
+
+uint f32ToBf16_0(float x_0)
+{
+
+#line 28
+    uint w_0 = (as_type<uint>((x_0)));
+    if((w_0 & 2147483647U) > 2139095040U)
+    {
+
+#line 30
+        return (w_0 >> 16U) | 64U;
+    }
+    return (w_0 + 32767U + ((w_0 >> 16U) & 1U)) >> 16U;
+}
+
+
+#line 1
+struct T2Params_0
+{
+    uint k_0;
+    uint groups_0;
+    uint tokens_0;
+    uint rowBegin_0;
+    uint rows_0;
+    uint outLd_0;
+    uint outOffset_0;
+    uint accumulate_0;
+};
+
+
+#line 108
+struct KernelContext_0
+{
+    T2Params_0 constant* params_0;
+    ushort device* scales_0;
+    uchar device* qdata_0;
+    ushort device* act_0;
+    ushort device* dst_0;
+};
+
+
+#line 59
+[[kernel]] void main_0(uint3 tid_0 [[thread_position_in_grid]], T2Params_0 constant* params_1 [[buffer(0)]], ushort device* scales_1 [[buffer(2)]], uchar device* qdata_1 [[buffer(1)]], ushort device* act_1 [[buffer(3)]], ushort device* dst_1 [[buffer(4)]])
+{
+
+#line 59
+    float part0_0;
+
+#line 59
+    thread KernelContext_0 kernelContext_0;
+
+#line 59
+    (&kernelContext_0)->params_0 = params_1;
+
+#line 59
+    (&kernelContext_0)->scales_0 = scales_1;
+
+#line 59
+    (&kernelContext_0)->qdata_0 = qdata_1;
+
+#line 59
+    (&kernelContext_0)->act_0 = act_1;
+
+#line 59
+    (&kernelContext_0)->dst_0 = dst_1;
+    uint idx_0 = tid_0.x;
+    if(idx_0 >= (params_1->rows_0 * params_1->tokens_0))
+    {
+
+#line 62
+        return;
+    }
+    uint loc_0 = idx_0 % params_1->rows_0;
+    uint t_0 = idx_0 / params_1->rows_0;
+    uint _S1 = (&kernelContext_0)->params_0->rowBegin_0 + loc_0;
+    thread array<float, int(32)> lane_0;
+
+#line 67
+    uint l_0 = 0U;
+    for(;;)
+    {
+
+#line 68
+        if(l_0 < 32U)
+        {
+        }
+        else
+        {
+
+#line 68
+            break;
+        }
+
+#line 69
+        lane_0[l_0] = 0.0f;
+
+#line 68
+        l_0 = l_0 + 1U;
+
+#line 68
+    }
+
+#line 68
+    uint g_0 = 0U;
+
+
+    for(;;)
+    {
+
+#line 71
+        if(g_0 < ((&kernelContext_0)->params_0->groups_0))
+        {
+        }
+        else
+        {
+
+#line 71
+            break;
+        }
+
+#line 72
+        uint gi_0 = _S1 * (&kernelContext_0)->params_0->groups_0 + g_0;
+        float _S2 = f16ToF32_0(uint((&kernelContext_0)->scales_0[gi_0]));
+
+#line 73
+        l_0 = 0U;
+        for(;;)
+        {
+
+#line 74
+            if(l_0 < 32U)
+            {
+            }
+            else
+            {
+
+#line 74
+                break;
+            }
+
+#line 75
+            uint _S3 = uint((&kernelContext_0)->qdata_0[gi_0 * 32U + l_0]);
+            uint _S4 = g_0 * 128U + l_0 * 4U;
+
+#line 76
+            part0_0 = 0.0f;
+
+#line 76
+            uint j_0 = 0U;
+
+            for(;;)
+            {
+
+#line 78
+                if(j_0 < 4U)
+                {
+                }
+                else
+                {
+
+#line 78
+                    break;
+                }
+
+#line 79
+                uint _S5 = _S4 + j_0;
+
+#line 79
+                if(_S5 < ((&kernelContext_0)->params_0->k_0))
+                {
+
+#line 80
+                    float wf_0 = float(t2Decode_0((_S3 >> (j_0 * 2U)) & 3U));
+
+#line 80
+                    float part0_1;
+                    if(t_0 < (params_1->tokens_0))
+                    {
+
+#line 81
+                        part0_1 = part0_0 + wf_0 * bf16ToF32_0(uint((&kernelContext_0)->act_0[t_0 * (&kernelContext_0)->params_0->k_0 + _S5]));
+
+#line 81
+                    }
+                    else
+                    {
+
+#line 81
+                        part0_1 = part0_0;
+
+#line 81
+                    }
+
+#line 81
+                    part0_0 = part0_1;
+
+#line 79
+                }
+
+#line 78
+                j_0 = j_0 + 1U;
+
+#line 78
+            }
+
+#line 86
+            float pr0_0 = part0_0 * _S2;
+            lane_0[l_0] = lane_0[l_0] + pr0_0;
+
+#line 74
+            l_0 = l_0 + 1U;
+
+#line 74
+        }
+
+#line 71
+        g_0 = g_0 + 1U;
+
+#line 71
+    }
+
+#line 71
+    l_0 = 0U;
+
+#line 90
+    for(;;)
+    {
+
+#line 90
+        if(l_0 < 16U)
+        {
+        }
+        else
+        {
+
+#line 90
+            break;
+        }
+
+#line 91
+        lane_0[l_0] = lane_0[l_0] + lane_0[l_0 + 16U];
+
+#line 90
+        l_0 = l_0 + 1U;
+
+#line 90
+    }
+
+#line 90
+    l_0 = 0U;
+
+
+    for(;;)
+    {
+
+#line 93
+        if(l_0 < 8U)
+        {
+        }
+        else
+        {
+
+#line 93
+            break;
+        }
+
+#line 94
+        lane_0[l_0] = lane_0[l_0] + lane_0[l_0 + 8U];
+
+#line 93
+        l_0 = l_0 + 1U;
+
+#line 93
+    }
+
+#line 93
+    l_0 = 0U;
+
+
+    for(;;)
+    {
+
+#line 96
+        if(l_0 < 4U)
+        {
+        }
+        else
+        {
+
+#line 96
+            break;
+        }
+
+#line 97
+        lane_0[l_0] = lane_0[l_0] + lane_0[l_0 + 4U];
+
+#line 96
+        l_0 = l_0 + 1U;
+
+#line 96
+    }
+
+#line 96
+    l_0 = 0U;
+
+
+    for(;;)
+    {
+
+#line 99
+        if(l_0 < 2U)
+        {
+        }
+        else
+        {
+
+#line 99
+            break;
+        }
+
+#line 100
+        lane_0[l_0] = lane_0[l_0] + lane_0[l_0 + 2U];
+
+#line 99
+        l_0 = l_0 + 1U;
+
+#line 99
+    }
+
+#line 99
+    l_0 = 0U;
+
+
+    for(;;)
+    {
+
+#line 102
+        if(l_0 < 1U)
+        {
+        }
+        else
+        {
+
+#line 102
+            break;
+        }
+
+#line 103
+        uint _S6 = l_0 + 1U;
+
+#line 103
+        lane_0[l_0] = lane_0[l_0] + lane_0[_S6];
+
+#line 102
+        l_0 = _S6;
+
+#line 102
+    }
+
+
+    float tot_0 = lane_0[0U];
+    uint oi_0 = t_0 * (&kernelContext_0)->params_0->outLd_0 + ((&kernelContext_0)->params_0->outOffset_0 + loc_0);
+    if(((&kernelContext_0)->params_0->accumulate_0) != 0U)
+    {
+
+#line 107
+        part0_0 = tot_0 + bf16ToF32_0(uint(*((&kernelContext_0)->dst_0+oi_0)));
+
+#line 107
+    }
+    else
+    {
+
+#line 107
+        part0_0 = tot_0;
+
+#line 107
+    }
+
+
+    *((&kernelContext_0)->dst_0+oi_0) = ushort(f32ToBf16_0(part0_0));
+    return;
+}

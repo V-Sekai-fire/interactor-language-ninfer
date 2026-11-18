@@ -20,3 +20,8 @@ lean_exe ninfer_num where
 -- Writes the kernels as Slang for kernels/gen.exs.
 lean_exe emit_ninfer where
   root := `EmitKernels
+
+-- Fixtures for the ternary linear kernels and the verdicts on what a host returns
+-- (tests/kernels/run.exs).
+lean_exe ninfer_t2 where
+  root := `T2Check
