@@ -11,7 +11,7 @@ reference model of the ternary linear is written with.
   value past the smallest subnormal's midpoint up to it.
 
 Every narrowing is integer arithmetic, so it does not depend on a target's float-to-half
-instruction (some round toward zero). The kernels in `Ninfer.Ops.LinearT2.Slang` use the same
+instruction (some round toward zero). The kernels in `Ninfer.Ops.Linear.Slang` use the same
 algorithm in Slang. `tests/num/run.exs` holds both to the hardware conversions of the host C++
 compiler (`_Float16`, `__bf16`), which are independent of this file.
 

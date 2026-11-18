@@ -23,5 +23,5 @@ lean_exe emit_ninfer where
 
 -- Fixtures for the ternary linear kernels and the verdicts on what a host returns
 -- (tests/kernels/run.exs).
-lean_exe ninfer_t2 where
-  root := `T2Check
+lean_exe ninfer_linear where
+  root := `LinearCheck

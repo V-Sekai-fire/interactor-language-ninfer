@@ -1,21 +1,21 @@
 -- SPDX-License-Identifier: Apache-2.0
 import Ninfer.Num
 import Ninfer.Rng
-import Ninfer.Ops.LinearT2.Spec
-import Ninfer.Ops.LinearT2.Kernels
+import Ninfer.Ops.Linear.Spec
+import Ninfer.Ops.Linear.Kernels
 
 /-!
-# `ninfer_t2` — fixtures for the ternary linear kernels, and the verdicts on what hosts return
+# `ninfer_linear` — fixtures for the ternary linear kernels, and the verdicts on what hosts return
 
-    ninfer_t2 plan                             one line per (case, variant): <case> <variant> <kernel> <cpu|gpu>
-    ninfer_t2 write <dir> <case> [<control>]   inputs, expected outputs and a host script per variant
-    ninfer_t2 check <dir> <variant>            judge `<variant>.*.out` against the expectation
-    ninfer_t2 selftest                         the checks that need no host
+    ninfer_linear plan                             one line per (case, variant): <case> <variant> <kernel> <cpu|gpu>
+    ninfer_linear write <dir> <case> [<control>]   inputs, expected outputs and a host script per variant
+    ninfer_linear check <dir> <variant>            judge `<variant>.*.out` against the expectation
+    ninfer_linear selftest                         the checks that need no host
 
 A *host* (`tests/kernels/cpu_host.cpp`, `tests/kernels/metal_host.swift`) only dispatches: it reads
 a script, runs the kernel over the files, and writes the buffers back. Every verdict is made here.
 
-The expectations are the reference model of `Ninfer.Ops.LinearT2.Spec`:
+The expectations are the reference model of `Ninfer.Ops.Linear.Spec`:
 
 * `exact` cases: the bfloat16 plane must equal the model's bit for bit, columns outside the written
   range untouched; the `_f32` probes must return the model's FP32 total bit for bit (a bfloat16
@@ -33,7 +33,7 @@ A control (`flip-row`) hands the kernel weights with one row's signs flipped whi
 stays; its verdict must be FAIL.
 -/
 
-open Ninfer Ninfer.Num Ninfer.Slang Ninfer.Slang.Dag Ninfer.Ops.LinearT2
+open Ninfer Ninfer.Num Ninfer.Slang Ninfer.Slang.Dag Ninfer.Ops.Linear
 
 /-! ## Cases -/
 
@@ -571,5 +571,5 @@ def main (args : List String) : IO UInt32 := do
   | ["check", dir, variant] => check dir variant
   | ["selftest"] => selftest
   | _ =>
-    IO.eprintln "usage: ninfer_t2 plan | write <dir> <case> [flip-row] | check <dir> <variant> | selftest"
+    IO.eprintln "usage: ninfer_linear plan | write <dir> <case> [flip-row] | check <dir> <variant> | selftest"
     return 2

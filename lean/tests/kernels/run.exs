@@ -3,8 +3,8 @@
 #
 #   elixir tests/kernels/run.exs [--metal] [--only <regex>] [--skip-big] [--skip-mutants]    (from lean/)
 #
-# For every (case, variant) of `ninfer_t2 plan`: `ninfer_t2 write` makes the inputs and the
-# expectation, a host runs the kernel over them, `ninfer_t2 check` judges. Two hosts:
+# For every (case, variant) of `ninfer_linear plan`: `ninfer_linear write` makes the inputs and the
+# expectation, a host runs the kernel over them, `ninfer_linear check` judges. Two hosts:
 #
 #   * cpu: the kernel as a DAG of executes (kernels/dag.exs). A kernel with group barriers is a DAG of
 #     barrier-free processes; each is one run of its own C++ binary over the whole grid, in
@@ -70,10 +70,10 @@ Fs.must(Fs.rm_rf(build))
 Fs.must(Fs.mkdir_p(build))
 
 IO.puts("== build ==")
-must.(run.("lake", ["build", "ninfer_t2", "emit_ninfer"], cd: lean), "lake build")
+must.(run.("lake", ["build", "ninfer_linear", "emit_ninfer"], cd: lean), "lake build")
 
 IO.puts("== selftest ==")
-IO.write(must.(run.(bin.("ninfer_t2"), ["selftest"], []), "ninfer_t2 selftest"))
+IO.write(must.(run.(bin.("ninfer_linear"), ["selftest"], []), "ninfer_linear selftest"))
 
 # --- hosts -----------------------------------------------------------------------------------
 
@@ -152,7 +152,7 @@ run_cpu = fn kernel, script, variant, lanes ->
   end
 end
 
-judge = fn dir, variant -> run.(bin.("ninfer_t2"), ["check", dir, variant], []) end
+judge = fn dir, variant -> run.(bin.("ninfer_linear"), ["check", dir, variant], []) end
 
 # --- the Metal host --------------------------------------------------------------------------
 
@@ -168,7 +168,7 @@ metal_for =
 # --- the plan --------------------------------------------------------------------------------
 
 plan =
-  must.(run.(bin.("ninfer_t2"), ["plan"], []), "ninfer_t2 plan")
+  must.(run.(bin.("ninfer_linear"), ["plan"], []), "ninfer_linear plan")
   |> String.split("\n", trim: true)
   |> Enum.map(&String.split(&1, " "))
   |> Enum.map(fn [case_id, kind, variant, kernel] -> %{case: case_id, kind: kind, variant: variant, kernel: kernel} end)
@@ -200,7 +200,7 @@ results =
     acc ->
       dir = Path.join(build, "case/#{c}")
       t0 = System.monotonic_time(:millisecond)
-      must.(run.(bin.("ninfer_t2"), ["write", dir, c], []), "write #{c}")
+      must.(run.(bin.("ninfer_linear"), ["write", dir, c], []), "write #{c}")
 
       rs =
         for p <- Enum.filter(plan, &(&1.case == c)), host <- ["cpu"] ++ if(metal?, do: ["metal"], else: []) do
@@ -271,12 +271,12 @@ must_fail = fn name, verdict ->
 end
 
 # A control on one (case, variant): the fixture in `tag`, an optional input control, the kernels and
-# hosts of a configuration, a lane order; the verdict of `ninfer_t2 check`. A run that does not
+# hosts of a configuration, a lane order; the verdict of `ninfer_linear check`. A run that does not
 # finish is not a verdict (status 2), so a crash cannot pass a control.
 control = fn tag, case_id, variant, kernel, input_control, {kernels, hosts}, lanes ->
   dir = Path.join(build, "control/#{tag}")
   write_args = ["write", dir, case_id] ++ if(input_control, do: [input_control], else: [])
-  must.(run.(bin.("ninfer_t2"), write_args, []), "write #{case_id} control")
+  must.(run.(bin.("ninfer_linear"), write_args, []), "write #{case_id} control")
 
   verdict =
     case Ninfer.Dag.run(Fs.must(Fs.fetch(kernels, kernel)), hosts, Path.join(dir, "script.#{variant}.txt"), variant, lanes) do
@@ -333,7 +333,7 @@ order_control =
     hosts = Path.join(build, "mutant/merge-fold/host")
     k = Fs.must(Fs.fetch(kernels, "t2_a16_lanes_f32"))
     script = Path.join(dir, "script.a16_lanes_f32.txt")
-    must.(run.(bin.("ninfer_t2"), ["write", dir, "e0"], []), "write e0 order control")
+    must.(run.(bin.("ninfer_linear"), ["write", dir, "e0"], []), "write e0 order control")
 
     outcome =
       with :ok <- Ninfer.Dag.run(k, hosts, script, "a16_lanes_f32", :forward),

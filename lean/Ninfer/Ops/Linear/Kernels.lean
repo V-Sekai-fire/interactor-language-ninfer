@@ -2,13 +2,13 @@
 import LeanSlang
 import Ninfer.Slang.Dsl
 import Ninfer.Slang.Kernel
-import Ninfer.Ops.LinearT2.Spec
+import Ninfer.Ops.Linear.Spec
 
 /-!
-# `Ninfer.Ops.LinearT2.Kernels` — the ternary linear as Slang, emitted from Lean
+# `Ninfer.Ops.Linear.Kernels` — the ternary linear as Slang, emitted from Lean
 
 The T2G128_F16S ternary linear of `src/ops/linear/t2` (and the `linear_add` and `linear_swiglu`
-wrappers) as `LeanSlang` trees. `Ninfer.Ops.LinearT2.Spec` is the reference: it fixes every
+wrappers) as `LeanSlang` trees. `Ninfer.Ops.Linear.Spec` is the reference: it fixes every
 rounding, and these kernels do the same arithmetic in the same order, so the result is a function
 of the inputs and not of the target or the schedule.
 
@@ -42,7 +42,7 @@ bfloat16: a bfloat16 comparison hides a last-bit difference in the FP32 sum, an 
 `Mutant` plants one fault in the emitted text; each must be caught by the gate.
 -/
 
-namespace Ninfer.Ops.LinearT2
+namespace Ninfer.Ops.Linear
 
 open LeanSlang Ninfer.Slang Ninfer.Slang.Dsl Ninfer.Slang.Dag
 
@@ -421,4 +421,4 @@ def siluMulKernel : Kernel :=
 def kernels (c : Cfg) : List Kernel :=
   [ a16Serial c, a16Lanes c 1, a16Lanes c wideTokens, a8Quantize c, a8Serial c, a8Lanes c, siluMulKernel ]
 
-end Ninfer.Ops.LinearT2
+end Ninfer.Ops.Linear

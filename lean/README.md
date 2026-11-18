@@ -17,12 +17,12 @@ Lean fixes every rounding step of the matmuls. On the C++ host and on Metal, the
 
 ```
 Ninfer/Num.lean, Rng.lean            float formats, and a seeded generator
-Ninfer/Ops/LinearT2/Spec.lean        the reference model
-Ninfer/Ops/LinearT2/Kernels.lean     the kernels, as LeanSlang trees
+Ninfer/Ops/Linear/Spec.lean          the reference model
+Ninfer/Ops/Linear/Kernels.lean       the kernels, as LeanSlang trees
 Ninfer/Slang/Dsl.lean                short constructors for the trees
 Ninfer/Slang/Dag.lean, Kernel.lean   a kernel with barriers, as a DAG of processes
 EmitKernels.lean                     emit_ninfer: writes the Slang
-T2Check.lean                         ninfer_t2: the test inputs, and the verdicts
+LinearCheck.lean                     ninfer_linear: the test inputs, and the verdicts
 NumCheck.lean                        ninfer_num: the float formats against the host compiler
 kernels/gen.exs, lib.exs, dag.exs    slangc over the Slang; the DAG runner for the C++ host
 kernels/slang, spv, metal, cpp       the committed output of gen.exs
@@ -47,7 +47,7 @@ The check over-approximates, so it can refuse a safe DAG. It looks at the shared
 
 ```sh
 lake build                                # the library
-lake exe ninfer_t2 selftest               # the checks that need no host
+lake exe ninfer_linear selftest           # the checks that need no host
 elixir tests/num/run.exs                  # float formats against the host compiler
 elixir kernels/gen.exs --check            # the committed kernels are what Lean emits
 elixir tests/kernels/run.exs [--metal]    # the kernels against the model
@@ -57,7 +57,7 @@ You need `elan` (it reads `lean-toolchain`), `slangc` 2026.13, a C++17 compiler,
 
 `tests/num/run.exs` compares the float formats of Lean with the hardware conversions of the host compiler. It uses 904,446 narrowing inputs and 65,536 widening patterns.
 
-`tests/kernels/run.exs` runs every kernel on the C++ host, as a DAG of executes. With `--metal`, it also runs every kernel on the GPU. For each case, `ninfer_t2` writes the inputs and the expected result. It then judges what the host returns.
+`tests/kernels/run.exs` runs every kernel on the C++ host, as a DAG of executes. With `--metal`, it also runs every kernel on the GPU. For each case, `ninfer_linear` writes the inputs and the expected result. It then judges what the host returns.
 
 - Exact cases (`e0` to `e7`) compare bit for bit. They compare the bfloat16 output. They also compare the FP32 total, through a probe kernel that stores it. The cases cover a row range, an output offset, accumulation, one input past a whole group, and a K of 3. Output buffers start as poison. NaN follows the activations. A kernel that skips a write, or reads past its input, fails.
 - Accuracy cases (`c<n>x<k>t<t>`) compare with an FP64 reference. The tolerance is the engine criterion: `tests/ops/linear/linear_test_common.cpp` and `reduction_passes` in `tests/ops/op_check.h`. The shapes come from the Mojo suite that this replaces.

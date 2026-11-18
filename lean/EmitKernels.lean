@@ -1,13 +1,13 @@
 -- SPDX-License-Identifier: Apache-2.0
 import LeanSlang
-import Ninfer.Ops.LinearT2.Kernels
+import Ninfer.Ops.Linear.Kernels
 
 /-!
 # `emit_ninfer` — write the kernels as Slang
 
     emit_ninfer <outDir> [--mutant <name>] [--probe] [--glue] [--unchecked]
 
-For each kernel of `Ninfer.Ops.LinearT2.kernels` (`Ninfer.Slang.Kernel` describes the two forms):
+For each kernel of `Ninfer.Ops.Linear.kernels` (`Ninfer.Slang.Kernel` describes the two forms):
 
 * `<name>.slang`: the kernel as one module, barriers in, for the targets that run a group in
   parallel (SPIR-V, Metal);
@@ -24,7 +24,7 @@ mutants that exist to show the dynamic gates catch what the static one would.
 `kernels/gen.exs` takes it from there (slangc to C++, SPIR-V and Metal).
 -/
 
-open LeanSlang Ninfer.Slang Ninfer.Slang.Dag Ninfer.Ops.LinearT2
+open LeanSlang Ninfer.Slang Ninfer.Slang.Dag Ninfer.Ops.Linear
 
 def elemBytes : String → Nat
   | "uint8_t" => 1

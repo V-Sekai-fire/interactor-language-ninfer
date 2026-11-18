@@ -3,9 +3,9 @@ import Ninfer.Num
 import Ninfer.Rng
 
 /-!
-# `Ninfer.Ops.LinearT2.Spec` — the ternary linear, as arithmetic
+# `Ninfer.Ops.Linear.Spec` — the ternary linear, as arithmetic
 
-What the kernels of `Ninfer.Ops.LinearT2.Kernels` must compute, in Lean. Every rounding is spelled
+What the kernels of `Ninfer.Ops.Linear.Kernels` must compute, in Lean. Every rounding is spelled
 out, so the result is a function of the inputs: no schedule, device or library appears in it.
 
 * **Weights** (`Weight`): per output row and group of 128 inputs, 32 code bytes and one binary16
@@ -23,7 +23,7 @@ out, so the result is a function of the inputs: no schedule, device or library a
 FP32 here is `Float32`, whose every operation rounds to binary32; nothing fuses.
 -/
 
-namespace Ninfer.Ops.LinearT2
+namespace Ninfer.Ops.Linear
 
 open Ninfer Ninfer.Num
 
@@ -270,4 +270,4 @@ def siluMul (plane : Array UInt16) (t inter : Nat) : Array UInt16 := Id.run do
       out := out.push (f32ToBf16 (sg * u))
   return out
 
-end Ninfer.Ops.LinearT2
+end Ninfer.Ops.Linear

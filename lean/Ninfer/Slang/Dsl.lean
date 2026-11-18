@@ -7,7 +7,7 @@ import LeanSlang
 The subset of the helpers in contract-rotation-star's `RotationStar.Slang.Dsl` that integer and
 buffer-heavy kernels need, with the bit operators added. Every helper expands to LeanSlang
 constructors, so a kernel written with them emits the same text as the same kernel written with
-the constructors by hand, and the pins in `Ninfer.Ops.LinearT2.Kernels` check exactly that.
+the constructors by hand, and the pins in `Ninfer.Ops.Linear.Kernels` check exactly that.
 
 LeanSlang prints a binary expression fully parenthesised, `(a op b)`, with `op` any string, so the
 shift, mask and comparison operators below are plain `.bin` nodes.
