@@ -28,7 +28,8 @@ permissions:
 
 jobs:
   kernels:
-    runs-on: macos-14
+    # macos-14 images retired on 2026-11-02. macos-15 is arm64.
+    runs-on: macos-15
     timeout-minutes: 60
     defaults:
       run:
