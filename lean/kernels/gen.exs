@@ -32,7 +32,7 @@ Code.require_file(Path.join(here, "lib.exs"))
 Code.require_file(Path.join(here, "dag.exs"))
 alias Ninfer.Fs
 lean = Path.expand(Path.join(here, ".."))
-slangc = System.get_env("SLANGC") || "slangc"
+slangc = Fs.must(Ninfer.Slangc.standalone(System.get_env("SLANGC") || "slangc", Path.join(lean, "build/slangc")))
 
 mode =
   case System.argv() do

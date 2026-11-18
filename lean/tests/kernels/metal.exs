@@ -17,7 +17,7 @@ here = __DIR__
 Code.require_file(Path.join(here, "../../kernels/lib.exs"))
 alias Ninfer.Fs
 lean = Path.expand(Path.join(here, "../.."))
-slangc = System.get_env("SLANGC") || "slangc"
+slangc = Fs.must(Ninfer.Slangc.standalone(System.get_env("SLANGC") || "slangc", Path.join(lean, "build/slangc")))
 
 die = fn msg -> IO.puts(:stderr, msg); System.halt(1) end
 

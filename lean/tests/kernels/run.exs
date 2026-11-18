@@ -37,7 +37,7 @@ Code.require_file(Path.join(lean, "kernels/lib.exs"))
 alias Ninfer.Fs
 build = Path.join(lean, "build/kernels")
 kdir = Path.join(lean, "kernels")
-slangc = System.get_env("SLANGC") || "slangc"
+slangc = Fs.must(Ninfer.Slangc.standalone(System.get_env("SLANGC") || "slangc", Path.join(lean, "build/slangc")))
 args = System.argv()
 metal? = "--metal" in args
 skip_big? = "--skip-big" in args

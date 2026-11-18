@@ -53,3 +53,65 @@ defmodule Ninfer.Fs do
     System.halt(1)
   end
 end
+
+defmodule Ninfer.Slangc do
+  @moduledoc false
+  alias Ninfer.Fs
+
+  # slangc writes `#include "<abs>/slang-cpp-prelude.h"` when an `include/` directory sits beside the
+  # directory of its executable, and inlines the 4,000-line prelude when none does. The committed C++
+  # holds the inlined form, so no host may get the other one. `standalone/2` copies the launcher into
+  # <dir>/bin and links the install's `lib/` as <dir>/lib, with no `include/` beside it.
+  def standalone(name, dir) do
+    bin = Path.join([dir, "bin", "slangc"])
+
+    with {:ok, exe} <- find(name),
+         real = resolve(exe),
+         {:ok, _} <- Fs.rm_rf(dir),
+         :ok <- Fs.mkdir_p(Path.dirname(bin)),
+         :ok <- Fs.cp(real, bin),
+         :ok <- chmod(bin),
+         :ok <- link_lib(Path.join(Path.dirname(Path.dirname(real)), "lib"), Path.join(dir, "lib")),
+         :ok <- runs(bin) do
+      {:ok, bin}
+    end
+  end
+
+  defp find(name) do
+    found = if String.contains?(name, "/"), do: name, else: System.find_executable(name)
+    if is_binary(found) and File.exists?(found), do: {:ok, found}, else: {:error, {:slangc, name, :not_found}}
+  end
+
+  # A launcher on PATH may be a symbolic link.
+  defp resolve(path) do
+    case File.read_link(path) do
+      {:ok, target} -> resolve(Path.expand(target, Path.dirname(path)))
+      {:error, _} -> path
+    end
+  end
+
+  defp chmod(path) do
+    case File.chmod(path, 0o755) do
+      :ok -> :ok
+      {:error, reason} -> {:error, {:chmod, path, reason}}
+    end
+  end
+
+  defp link_lib(lib, link) do
+    if File.dir?(lib) do
+      case File.ln_s(lib, link) do
+        :ok -> :ok
+        {:error, reason} -> {:error, {:ln_s, lib, reason}}
+      end
+    else
+      :ok
+    end
+  end
+
+  defp runs(bin) do
+    case System.cmd(bin, ["-v"], stderr_to_stdout: true) do
+      {_, 0} -> :ok
+      {out, status} -> {:error, {:slangc, bin, {status, String.trim(out)}}}
+    end
+  end
+end
