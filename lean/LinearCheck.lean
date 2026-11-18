@@ -225,8 +225,8 @@ structure Fixture where
 def makeFixture (c : Case) : Fixture :=
   let seed : UInt64 := (c.n * 7 + c.k + c.t).toUInt64
   let legal := c.kind != .exact
-  -- the ternary fixtures keep their scales positive; every integer format stores half negative
-  let w := makeWeight seed c.n c.k legal c.fmt (c.fmt.bits != 2)
+  -- about half of the scales are negative, as in the fixtures of the engine
+  let w := makeWeight seed c.n c.k legal c.fmt true
   let spread := c.kind == .exact
   let (ab, av) := makeActivations (seed + 1) c.t c.k spread
   let (ab, av) := if c.kind == .quant then specialActivations ab c.t c.k else (ab, av)
