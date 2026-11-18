@@ -61,7 +61,7 @@ end
 
 # {n, k}: whole groups, a partial group, a lone input, K below one lane's inputs, many rows, a long K
 shapes = [{40, 5120}, {9, 200}, {5, 129}, {3, 3}, {17, 1}, {130, 640}, {4, 17408}]
-fmts = ["q4", "q5", "q6", "q8"]
+fmts = ["t2", "q4", "q5", "q6", "q8"]
 
 IO.puts("== the model against the engine's weights ==")
 
@@ -133,7 +133,8 @@ corrupt = fn fmt, what ->
 end
 
 controls =
-  for {fmt, what} <- [{"q4", :code}, {"q5", :code}, {"q5", :high}, {"q6", :high}, {"q8", :code}, {"q4", :scale}, {"q8", :scale}] do
+  for {fmt, what} <- [{"t2", :code}, {"q4", :code}, {"q5", :code}, {"q5", :high}, {"q6", :high}, {"q8", :code},
+                       {"t2", :scale}, {"q4", :scale}, {"q8", :scale}] do
     case corrupt.(fmt, what) do
       {:error, {1, out}} ->
         IO.puts("   ok    #{fmt} #{what}: " <> (out |> String.split("\n", trim: true) |> List.last() |> String.slice(0, 140)))

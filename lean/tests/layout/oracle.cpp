@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // The engine's own row-split weight, and what the engine's own decoder makes of it.
 //
-//   layout_oracle <q4|q5|q6|q8> <n> <k> <seed> <hashed|coordinate> <dir>
+//   layout_oracle <t2|q4|q5|q6|q8> <n> <k> <seed> <hashed|coordinate> <dir>
 //
 // The weight is built by `quantized_weight::make_patterned_weight` and read back by
 // `quantized_weight::logical_weight_fp64` and `dot_fp64` (tests/ops/quantized_weight.h): the code the
@@ -61,12 +61,13 @@ bool write_file(const std::string& path, const void* data, std::size_t bytes) {
 
 int main(int argc, char** argv) {
     if (argc != 7) {
-        std::fprintf(stderr, "usage: layout_oracle <q4|q5|q6|q8> <n> <k> <seed> <hashed|coordinate> <dir>\n");
+        std::fprintf(stderr, "usage: layout_oracle <t2|q4|q5|q6|q8> <n> <k> <seed> <hashed|coordinate> <dir>\n");
         return 2;
     }
     const std::string name = argv[1];
     ninfer::QType qtype;
-    if (name == "q4") { qtype = ninfer::QType::Q4_G64_FP16; }
+    if (name == "t2") { qtype = ninfer::QType::T2_G128_FP16; }
+    else if (name == "q4") { qtype = ninfer::QType::Q4_G64_FP16; }
     else if (name == "q5") { qtype = ninfer::QType::Q5_G64_FP16; }
     else if (name == "q6") { qtype = ninfer::QType::Q6_G64_FP16; }
     else if (name == "q8") { qtype = ninfer::QType::Q8_G32_FP16; }

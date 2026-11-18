@@ -61,14 +61,14 @@ You need `elan` (it reads `lean-toolchain`), `slangc` 2026.13, a C++20 compiler,
 
 `tests/num/run.exs` compares the float formats of Lean with the hardware conversions of the host compiler. It uses 904,446 narrowing inputs and 65,536 widening patterns.
 
-`tests/layout/run.exs` builds weights with the fixture code of the engine, `make_patterned_weight` in `tests/ops/quantized_weight.h`. It includes that header, so it cannot drift from the engine. The decoder of the engine, `logical_weight_fp64` and `dot_fp64`, reads the weights. For every integer format and two code patterns, the model must do four things:
+`tests/layout/run.exs` builds weights with the fixture code of the engine, `make_patterned_weight` in `tests/ops/quantized_weight.h`. It includes that header, so it cannot drift from the engine. The decoder of the engine, `logical_weight_fp64` and `dot_fp64`, reads the weights. For every format and two code patterns, the model must do four things:
 
 - read the same weights, bit for bit,
 - see zero codes past K, and the scale 0 on a group wholly past K,
 - pack its codes into the code and high planes of the engine, byte for byte, and
 - give the FP64 dot products of the engine, bit for bit.
 
-Seven controls change one byte of a plane after the engine has decoded it. Each verdict must be FAIL.
+Nine controls change one byte of a plane after the engine has decoded it. Each verdict must be FAIL.
 
 `tests/kernels/run.exs` runs every kernel on the C++ host, as a DAG of executes. With `--metal`, it also runs every kernel on the GPU. For each case, `ninfer_linear` writes the inputs and the expected result. It then judges what the host returns.
 

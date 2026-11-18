@@ -98,13 +98,16 @@ def unpackCode (f : Fmt) (nib hi : ByteArray) (no ho i : Nat) : Int :=
     if u &&& (1 <<< (f.bits - 1)) != 0 then (u : Int) - ((1 <<< f.bits : Nat) : Int) else (u : Int)
 
 /-- The engine's `pack_lowbit_group`: the `group` codes of one group as the 32 bytes of the code
-plane and the `hiBytes` of the high plane. -/
+plane and the `hiBytes` of the high plane. A ternary code `-1`, `0` or `+1` is the field `11`, `00`
+or `01`, four to a byte. -/
 def packGroup (f : Fmt) (codes : Array Int) : ByteArray × ByteArray := Id.run do
   let mut nib : Array UInt8 := Array.replicate codeBytes 0
   let mut hi : Array UInt8 := Array.replicate f.hiBytes 0
   for i in [0:f.group] do
     let u : Nat := (codes[i]! % ((1 <<< f.bits : Nat) : Int)).toNat
-    if f.bits == 8 then
+    if f.bits == 2 then
+      nib := nib.modify (i / 4) fun b => b ||| UInt8.ofNat (u <<< (2 * (i % 4)))
+    else if f.bits == 8 then
       nib := nib.set! i (UInt8.ofNat u)
     else
       let low := u &&& 15

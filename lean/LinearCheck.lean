@@ -634,14 +634,25 @@ def selftest : IO UInt32 := do
   let w5 := vec Fmt.q5 [(0, -16), (1, 15), (9, -1)]
   let w6 := vec Fmt.q6 [(0, -32), (1, 31), (5, -1)]
   let w8 := vec Fmt.q8 [(0, -127), (1, 127), (2, -1)]
+  let w2 := vec Fmt.t2 [(0, 1), (1, -1), (3, -1)]
   let vecOk :=
-    (w4.1.get! 0 == 0x78 && w4.1.get! 1 == 0x0F)
+    w2.1.get! 0 == 0xCD
+    && (w4.1.get! 0 == 0x78 && w4.1.get! 1 == 0x0F)
     && (w5.1.get! 0 == 0xF0 && w5.1.get! 4 == 0xF0 && w5.2.get! 0 == 0x01 && w5.2.get! 1 == 0x02)
     && (w6.1.get! 0 == 0xF0 && w6.1.get! 2 == 0xF0 && w6.2.get! 0 == 0x06 && w6.2.get! 1 == 0x0C)
     && (w8.1.get! 0 == 0x81 && w8.1.get! 1 == 0x7F && w8.1.get! 2 == 0xFF)
   report "the integer packers write the words the engine's pack_lowbit_group writes" vecOk
-    "q4 0x78 0x0F; q5 nibbles 0xF0 and high bits 0x01 0x02; q6 high bits 0x06 0x0C; q8 0x81 0x7F 0xFF"
+    "t2 0xCD; q4 0x78 0x0F; q5 nibbles 0xF0 and high bits 0x01 0x02; q6 high bits 0x06 0x0C; q8 0x81 0x7F 0xFF"
   if !vecOk then fails := fails + 1
+  -- the ternary packer: -1, 0 and +1 at every input, read back by the decoder of the model
+  let mut badT2 := 0
+  for i in [0:128] do
+    for code in ([-1, 0, 1] : List Int) do
+      let (nib, _) := packGroup Fmt.t2 ((Array.replicate 128 (0 : Int)).set! i code)
+      let w : Weight := { n := 1, k := 128, groups := 1, q := nib, s := #[0x3C00] }
+      if w.value 0 0 i != code then badT2 := badT2 + 1
+  report "t2: every code at every input survives pack and decode" (badT2 == 0) s!"128 inputs x 3 codes, {badT2} differ"
+  if badT2 != 0 then fails := fails + 1
   -- the fixtures: codes in range, zero past K, a wholly padded group has scale 0, half the scales negative
   for f in Fmt.ints do
     let w := makeWeight 5 40 200 true f true
@@ -692,9 +703,6 @@ its FP64 dot products. The model must read the same weights bit for bit, see zer
 groups past K, pack its codes into the engine's bytes, and reproduce the engine's reference. -/
 def layoutCheck (dir name : String) : IO UInt32 := do
   let some f := Fmt.ofName name | do IO.eprintln s!"layout: unknown format {name}"; return 2
-  if f.bits == 2 then
-    IO.eprintln "layout: the signed-integer formats only"
-    return 2
   let txt ← IO.FS.readFile s!"{dir}/layout.txt"
   let get (key : String) : Nat := (keyNat txt key).getD 0
   let n := get "n"
@@ -782,5 +790,5 @@ def main (args : List String) : IO UInt32 := do
   | ["layout", dir, name] => layoutCheck dir name
   | ["selftest"] => selftest
   | _ =>
-    IO.eprintln "usage: ninfer_linear plan | write <dir> <case> [flip-row] | check <dir> <variant> | layout <dir> <q4|q5|q6|q8> | selftest"
+    IO.eprintln "usage: ninfer_linear plan | write <dir> <case> [flip-row] | check <dir> <variant> | layout <dir> <t2|q4|q5|q6|q8> | selftest"
     return 2
