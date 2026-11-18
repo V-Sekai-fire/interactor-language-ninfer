@@ -18,7 +18,8 @@ For each kernel of `Ninfer.Ops.Linear.kernels` (`Ninfer.Slang.Kernel` describes 
 * with `--glue`, `<stem>_glue.cpp` for each module: the C++ host entry `tests/kernels/cpu_host.cpp` calls.
 
 `--probe` emits the FP32-total probes; `--mutant` plants one fault (`sequential-fold`,
-`decode-illegal`, `no-guard`, `tie-away`, `merge-all`, `merge-fold`, `drop-edges`, `reverse-edges`).
+`decode-illegal`, `no-guard`, `tie-away`, `merge-all`, `merge-fold`, `drop-edges`, `reverse-edges`,
+`decode-unsigned`, `drop-high`, `swap-nibbles`).
 Each DAG is checked before anything is written (`Dag.check`); `--unchecked` skips that, for the
 mutants that exist to show the dynamic gates catch what the static one would.
 `kernels/gen.exs` takes it from there (slangc to C++, SPIR-V and Metal).
@@ -100,6 +101,9 @@ def parseMutant : String → Option Mutant
   | "merge-fold" => some .mergeFold
   | "drop-edges" => some .dropEdges
   | "reverse-edges" => some .reverseEdges
+  | "decode-unsigned" => some .decodeUnsigned
+  | "drop-high" => some .dropHigh
+  | "swap-nibbles" => some .swapNibbles
   | _ => none
 
 structure Opts where
