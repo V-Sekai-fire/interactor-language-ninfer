@@ -7,7 +7,6 @@ platforms = ["osx-arm64", "linux-64"]
 [dependencies]
 mojo = "==1.3.0.dev2026111316"
 python = "3.12.*"
-max = "==26.8.0.dev2026111316"
 pytest = "*"
 regex = "*"
 
