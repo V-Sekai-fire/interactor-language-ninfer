@@ -7,7 +7,7 @@
 // `kernel <name> threads <n> ...` lines give the threadgroup width. The script is the one
 // cpu_host.cpp reads: `grid` is thread groups, `params` go to buffer(0) as bytes, and
 // `buf <binding> <bytes per element> <in> <out|->` binds a buffer at that index. A buffer with an
-// `out` name is written back after the dispatch. This file owns no judgement: `ninfer_t2 check` does.
+// `out` name is written back after the dispatch. This file owns no judgement: `ninfer_linear check` does.
 import Foundation
 import Metal
 

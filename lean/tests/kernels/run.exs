@@ -3,8 +3,8 @@
 #
 #   elixir tests/kernels/run.exs [--metal] [--only <regex>] [--skip-big] [--skip-mutants]    (from lean/)
 #
-# For every (case, variant) of `ninfer_t2 plan`: `ninfer_t2 write` makes the inputs and the
-# expectation, a host runs the kernel over them, `ninfer_t2 check` judges. Two hosts:
+# For every (case, variant) of `ninfer_linear plan`: `ninfer_linear write` makes the inputs and the
+# expectation, a host runs the kernel over them, `ninfer_linear check` judges. Two hosts:
 #
 #   * cpu: the kernel as a DAG of executes (kernels/dag.exs). A kernel with group barriers is a DAG of
 #     barrier-free processes; each is one run of its own C++ binary over the whole grid, in
@@ -70,10 +70,10 @@ Fs.must(Fs.rm_rf(build))
 Fs.must(Fs.mkdir_p(build))
 
 IO.puts("== build ==")
-must.(run.("lake", ["build", "ninfer_t2", "emit_ninfer"], cd: lean), "lake build")
+must.(run.("lake", ["build", "ninfer_linear", "emit_ninfer"], cd: lean), "lake build")
 
 IO.puts("== selftest ==")
-IO.write(must.(run.(bin.("ninfer_t2"), ["selftest"], []), "ninfer_t2 selftest"))
+IO.write(must.(run.(bin.("ninfer_linear"), ["selftest"], []), "ninfer_linear selftest"))
 
 # --- hosts -----------------------------------------------------------------------------------
 
@@ -152,7 +152,7 @@ run_cpu = fn kernel, script, variant, lanes ->
   end
 end
 
-judge = fn dir, variant -> run.(bin.("ninfer_t2"), ["check", dir, variant], []) end
+judge = fn dir, variant -> run.(bin.("ninfer_linear"), ["check", dir, variant], []) end
 
 # --- the Metal host --------------------------------------------------------------------------
 
@@ -168,7 +168,7 @@ metal_for =
 # --- the plan --------------------------------------------------------------------------------
 
 plan =
-  must.(run.(bin.("ninfer_t2"), ["plan"], []), "ninfer_t2 plan")
+  must.(run.(bin.("ninfer_linear"), ["plan"], []), "ninfer_linear plan")
   |> String.split("\n", trim: true)
   |> Enum.map(&String.split(&1, " "))
   |> Enum.map(fn [case_id, kind, variant, kernel] -> %{case: case_id, kind: kind, variant: variant, kernel: kernel} end)
@@ -200,7 +200,7 @@ results =
     acc ->
       dir = Path.join(build, "case/#{c}")
       t0 = System.monotonic_time(:millisecond)
-      must.(run.(bin.("ninfer_t2"), ["write", dir, c], []), "write #{c}")
+      must.(run.(bin.("ninfer_linear"), ["write", dir, c], []), "write #{c}")
 
       rs =
         for p <- Enum.filter(plan, &(&1.case == c)), host <- ["cpu"] ++ if(metal?, do: ["metal"], else: []) do
@@ -271,12 +271,12 @@ must_fail = fn name, verdict ->
 end
 
 # A control on one (case, variant): the fixture in `tag`, an optional input control, the kernels and
-# hosts of a configuration, a lane order; the verdict of `ninfer_t2 check`. A run that does not
+# hosts of a configuration, a lane order; the verdict of `ninfer_linear check`. A run that does not
 # finish is not a verdict (status 2), so a crash cannot pass a control.
 control = fn tag, case_id, variant, kernel, input_control, {kernels, hosts}, lanes ->
   dir = Path.join(build, "control/#{tag}")
   write_args = ["write", dir, case_id] ++ if(input_control, do: [input_control], else: [])
-  must.(run.(bin.("ninfer_t2"), write_args, []), "write #{case_id} control")
+  must.(run.(bin.("ninfer_linear"), write_args, []), "write #{case_id} control")
 
   verdict =
     case Ninfer.Dag.run(Fs.must(Fs.fetch(kernels, kernel)), hosts, Path.join(dir, "script.#{variant}.txt"), variant, lanes) do
@@ -291,20 +291,36 @@ end
 flips =
   for {c, v, k} <- [{"e0", "a16_serial", "t2_a16_serial"}, {"e1", "a8_serial", "t2_a8_serial"},
                     {"e0", "a16_serial_f32", "t2_a16_serial_f32"}, {"e0", "a16_lanes", "t2_a16_lanes"},
-                    {"e1", "a8_lanes_f32", "t2_a8_lanes_f32"}] do
+                    {"e1", "a8_lanes_f32", "t2_a8_lanes_f32"},
+                    {"q4-e0", "q4_a16_serial", "q4_a16_serial"}, {"q5-e0", "q5_a16_lanes", "q5_a16_lanes"},
+                    {"q6-e0", "q6_a16_serial_f32", "q6_a16_serial_f32"}, {"q8-e0", "q8_a16_wide", "q8_a16_wide"},
+                    # the accuracy gate can fail too: one wrong row of 130 is far outside the criterion
+                    {"c130x5120t2", "a16_serial", "t2_a16_serial"}, {"q8-c130x5120t2", "q8_a16_serial", "q8_a16_serial"}] do
     must_fail.("flip-row #{c} #{v}", control.("flip-#{c}-#{v}", c, v, k, "flip-row", config_for.(k), :forward))
   end
 
 # {mutant, extra emit flags, [{case, variant, kernel}]}
 mutant_runs = [
-  {"sequential-fold", [], [{"e0", "a16_serial_f32", "t2_a16_serial_f32"}, {"e0", "a16_lanes_f32", "t2_a16_lanes_f32"}]},
+  {"sequential-fold", [], [{"e0", "a16_serial_f32", "t2_a16_serial_f32"}, {"e0", "a16_lanes_f32", "t2_a16_lanes_f32"},
+                           {"q4-e0", "q4_a16_serial_f32", "q4_a16_serial_f32"}, {"q8-e0", "q8_a16_lanes_f32", "q8_a16_lanes_f32"}]},
   {"decode-illegal", [], [{"e0", "a16_serial_f32", "t2_a16_serial_f32"}, {"e0", "a8_serial_f32", "t2_a8_serial_f32"},
                           {"e0", "a16_lanes_f32", "t2_a16_lanes_f32"}]},
-  {"no-guard", [], [{"e1", "a16_serial_f32", "t2_a16_serial_f32"}, {"e1", "a16_lanes_f32", "t2_a16_lanes_f32"}]},
+  {"no-guard", [], [{"e1", "a16_serial_f32", "t2_a16_serial_f32"}, {"e1", "a16_lanes_f32", "t2_a16_lanes_f32"},
+                    {"q4-e1", "q4_a16_serial_f32", "q4_a16_serial_f32"}, {"q8-e1", "q8_a16_lanes_f32", "q8_a16_lanes_f32"},
+                    {"q5-e7", "q5_a16_serial_f32", "q5_a16_serial_f32"}]},
   {"tie-away", [], [{"q300t2", "a8_quantize", "t2_a8_quantize"}]},
-  {"merge-all", ["--unchecked"], [{"e0", "a16_lanes_f32", "t2_a16_lanes_f32"}, {"e0", "a8_lanes_f32", "t2_a8_lanes_f32"}]},
-  {"merge-fold", ["--unchecked"], [{"e0", "a16_lanes_f32", "t2_a16_lanes_f32"}]},
-  {"reverse-edges", [], [{"e0", "a16_lanes_f32", "t2_a16_lanes_f32"}, {"e0", "a8_lanes_f32", "t2_a8_lanes_f32"}]}
+  {"merge-all", ["--unchecked"], [{"e0", "a16_lanes_f32", "t2_a16_lanes_f32"}, {"e0", "a8_lanes_f32", "t2_a8_lanes_f32"},
+                                 {"q6-e0", "q6_a16_lanes_f32", "q6_a16_lanes_f32"}]},
+  {"merge-fold", ["--unchecked"], [{"e0", "a16_lanes_f32", "t2_a16_lanes_f32"}, {"q4-e0", "q4_a16_wide_f32", "q4_a16_wide_f32"}]},
+  {"reverse-edges", [], [{"e0", "a16_lanes_f32", "t2_a16_lanes_f32"}, {"e0", "a8_lanes_f32", "t2_a8_lanes_f32"},
+                         {"q5-e0", "q5_a16_lanes_f32", "q5_a16_lanes_f32"}]},
+  # a code read as unsigned, the high plane left out, the nibbles of a byte swapped
+  {"decode-unsigned", [], [{"q4-e0", "q4_a16_serial_f32", "q4_a16_serial_f32"}, {"q5-e0", "q5_a16_serial_f32", "q5_a16_serial_f32"},
+                           {"q6-e0", "q6_a16_lanes_f32", "q6_a16_lanes_f32"}, {"q8-e0", "q8_a16_serial_f32", "q8_a16_serial_f32"}]},
+  {"drop-high", [], [{"q5-e0", "q5_a16_serial_f32", "q5_a16_serial_f32"}, {"q6-e0", "q6_a16_serial_f32", "q6_a16_serial_f32"},
+                     {"q6-e0", "q6_a16_wide_f32", "q6_a16_wide_f32"}]},
+  {"swap-nibbles", [], [{"q4-e0", "q4_a16_lanes_f32", "q4_a16_lanes_f32"}, {"q5-e0", "q5_a16_serial_f32", "q5_a16_serial_f32"},
+                        {"q6-e0", "q6_a16_serial_f32", "q6_a16_serial_f32"}]}
 ]
 
 mutants =
@@ -333,7 +349,7 @@ order_control =
     hosts = Path.join(build, "mutant/merge-fold/host")
     k = Fs.must(Fs.fetch(kernels, "t2_a16_lanes_f32"))
     script = Path.join(dir, "script.a16_lanes_f32.txt")
-    must.(run.(bin.("ninfer_t2"), ["write", dir, "e0"], []), "write e0 order control")
+    must.(run.(bin.("ninfer_linear"), ["write", dir, "e0"], []), "write e0 order control")
 
     outcome =
       with :ok <- Ninfer.Dag.run(k, hosts, script, "a16_lanes_f32", :forward),

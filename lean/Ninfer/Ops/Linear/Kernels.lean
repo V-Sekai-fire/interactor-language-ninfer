@@ -2,15 +2,17 @@
 import LeanSlang
 import Ninfer.Slang.Dsl
 import Ninfer.Slang.Kernel
-import Ninfer.Ops.LinearT2.Spec
+import Ninfer.Ops.Linear.Spec
 
 /-!
-# `Ninfer.Ops.LinearT2.Kernels` — the ternary linear as Slang, emitted from Lean
+# `Ninfer.Ops.Linear.Kernels` — the linear op as Slang, emitted from Lean
 
 The T2G128_F16S ternary linear of `src/ops/linear/t2` (and the `linear_add` and `linear_swiglu`
-wrappers) as `LeanSlang` trees. `Ninfer.Ops.LinearT2.Spec` is the reference: it fixes every
-rounding, and these kernels do the same arithmetic in the same order, so the result is a function
-of the inputs and not of the target or the schedule.
+wrappers), and the A16 route of the signed-integer formats `q4_g64_fp16`, `q5_g64_fp16`,
+`q6_g64_fp16` and `q8_g32_fp16` of `src/ops/linear`, as `LeanSlang` trees.
+`Ninfer.Ops.Linear.Spec` is the reference: it fixes every rounding, and these kernels do the same
+arithmetic in the same order, so the result is a function of the inputs and not of the target or
+the schedule.
 
 ## Weights
 
@@ -18,6 +20,13 @@ Row-split planes. For output row `n` and group `g` of 128 inputs: 32 code bytes 
 per byte, input `i` of the group in bits `2 (i % 4)` of byte `i / 4`) at `(n * groups + g) * 32`,
 and one binary16 scale at `n * groups + g`. A code decodes as `m - 2 (m & s)` with `m` its low bit
 and `s` its high bit: `00` is 0, `01` is +1, `11` is -1, and the illegal `10` is 0.
+
+The signed-integer formats keep 32 code bytes per group too: `q4`, `q5` and `q6` hold two codes in
+a byte (the even input in the low nibble), `q8` one. `q5` and `q6` add `hiBytes` (8 and 16) of high
+plane, in a buffer of its own (`qhigh`) at `(n * groups + g) * hiBytes`: a fifth bit per code for
+`q5`, two bits for `q6`. A code is a two's complement field. Lane `l` of a kernel owns byte `l` of
+the group's code bytes, so it reads one byte of the code plane (and one of the high plane) for its
+`group / 32` inputs, whatever the format.
 
 ## The two routes
 
@@ -42,7 +51,7 @@ bfloat16: a bfloat16 comparison hides a last-bit difference in the FP32 sum, an 
 `Mutant` plants one fault in the emitted text; each must be caught by the gate.
 -/
 
-namespace Ninfer.Ops.LinearT2
+namespace Ninfer.Ops.Linear
 
 open LeanSlang Ninfer.Slang Ninfer.Slang.Dsl Ninfer.Slang.Dag
 
@@ -70,6 +79,12 @@ inductive Mutant
   | dropEdges
   /-- Every edge reversed: the processes run in the wrong order. -/
   | reverseEdges
+  /-- A signed-integer code is read as unsigned: the sign is dropped. -/
+  | decodeUnsigned
+  /-- The high plane of `q5` and `q6` is not read. -/
+  | dropHigh
+  /-- The two nibbles of a byte are taken in the other order. -/
+  | swapNibbles
 deriving BEq, Repr, Inhabited
 
 /-- The DAG under a mutant: the faults of a barrier kernel are faults of its edges. -/
@@ -155,6 +170,32 @@ def decodeFn (mt : Mutant) : SlangFunctionDecl :=
       , let_ uT "sg" (band (shr (v "code") (u 1)) (u 1))
       , retE (toI (v "mg") - i 2 * toI (band (v "mg") (v "sg"))) ]
 
+/-- A signed-integer code to its value, the engine's `unpack_lowbit_code` for one input of a lane.
+`byte` is the lane's code byte, `hbyte` its byte of high plane (0 where a format has none), `lane`
+the lane and `j` the input within the byte. -/
+def gDecodeFn (f : Fmt) (mt : Mutant) : SlangFunctionDecl :=
+  let signExt (e : E) : E :=
+    if mt == .decodeUnsigned then toI e
+    else toI e - i ((1 <<< f.bits : Nat) : Int) * toI (band (shr e (u (f.bits - 1))) (u 1))
+  let shift : E := if mt == .swapNibbles then (u 1 - v "j") * u 4 else v "j" * u 4
+  let low : E := band (shr (v "byte") shift) (u 15)
+  let body : List St :=
+    if f.bits == 8 then
+      [ retE (signExt (v "byte")) ]
+    else if f.bits == 4 then
+      [ let_ uT "cu" low, retE (signExt (v "cu")) ]
+    else if f.bits == 5 then
+      [ let_ uT "hb" (if mt == .dropHigh then u 0
+          else band (shr (v "hbyte") (band (v "lane") (u 3) * u 2 + v "j")) (u 1))
+      , let_ uT "cu" (bor low (shl (v "hb") (u 4)))
+      , retE (signExt (v "cu")) ]
+    else
+      [ let_ uT "hb" (if mt == .dropHigh then u 0
+          else band (shr (v "hbyte") (band (v "lane") (u 1) * u 4 + v "j" * u 2)) (u 3))
+      , let_ uT "cu" (bor low (shl (v "hb") (u 4)))
+      , retE (signExt (v "cu")) ]
+  fn iT "gDecode" [prm "byte" uT, prm "hbyte" uT, prm "lane" uT, prm "j" uT] body
+
 /-- Round to nearest, ties to even (`rintf`). -/
 def roundEvenFn (mt : Mutant) : SlangFunctionDecl :=
   match mt with
@@ -174,12 +215,15 @@ def mk (c : Cfg) (name paramsStruct : String) (fields : List String) (bufs : Lis
     (helpers : List SlangFunctionDecl) (ids : List SlangBinding) (dag : Dag) : Kernel :=
   mkKernel name paramsStruct fields bufs threads helpers ids (c.mutant.onDag dag)
 
-def t2Fields : List String :=
+def linFields : List String :=
   ["k", "groups", "tokens", "rowBegin", "rows", "outLd", "outOffset", "accumulate"]
 
-/-- The A16 buffers; the output is the bfloat16 plane, or the FP32 total of the probe. -/
-def a16Bufs (c : Cfg) : List Buf :=
-  [ ⟨"qdata", "uint8_t", false⟩, ⟨"scales", "uint16_t", false⟩, ⟨"act", "uint16_t", false⟩
+/-- The A16 buffers; the output is the bfloat16 plane, or the FP32 total of the probe. A format with
+a high plane has it at binding 2, after the code plane. -/
+def a16Bufs (c : Cfg) (f : Fmt) : List Buf :=
+  [ ⟨"qdata", "uint8_t", false⟩ ] ++
+  (if f.hiBytes > 0 then [⟨"qhigh", "uint8_t", false⟩] else []) ++
+  [ ⟨"scales", "uint16_t", false⟩, ⟨"act", "uint16_t", false⟩
   , ⟨"dst", if c.probe then "uint" else "uint16_t", true⟩ ]
 
 def a8Bufs (c : Cfg) : List Buf :=
@@ -198,18 +242,35 @@ def storeStmts (c : Cfg) (total : String) : List St :=
     , if_ (ne (p "accumulate") (u 0)) [setv total (v total + call "bf16ToF32" [toU (at_ "dst" (v "oi"))])]
     , setAt "dst" (v "oi") (.cast u16T (call "f32ToBf16" [v total])) ]
 
-def helpersA16 (c : Cfg) : List SlangFunctionDecl :=
-  [bf16ToF32Fn, f32ToBf16Fn, f16ToF32Fn, decodeFn c.mutant]
+/-- The conversions and the decode of the format's codes. -/
+def helpersA16 (c : Cfg) (f : Fmt) : List SlangFunctionDecl :=
+  [bf16ToF32Fn, f32ToBf16Fn, f16ToF32Fn, if f.bits == 2 then decodeFn c.mutant else gDecodeFn f c.mutant]
 
-/-- The products of one lane for one group: `byte` holds the lane's four codes, `base` is the
-input index of its first. `parts` are the scalar partials, one per token. -/
-def laneProducts (c : Cfg) (tokens : List Nat) (tokenIdx : Nat → E) : List St :=
+/-- Where lane `lane` finds its byte of high plane within a group's `hiBytes`: `q5` keeps eight
+inputs in a byte, `q6` four. -/
+def hiIndex (f : Fmt) (lane : E) : E := if f.bits == 5 then lane / u 4 else lane / u 2
+
+/-- A lane's loads for one group: `byte` is its code byte, `hbyte` its byte of high plane (formats
+that have one), `base` the input index of its first input. `gi` and `g` are the group's index and
+its position in the row. -/
+def laneSetup (f : Fmt) (laneE : E) : List St :=
+  [ let_ uT "byte" (toU (at_ "qdata" (v "gi" * u 32 + laneE))) ] ++
+  (if f.hiBytes > 0 then
+    [ let_ uT "hbyte" (toU (at_ "qhigh" (v "gi" * u f.hiBytes + hiIndex f laneE))) ] else []) ++
+  [ let_ uT "base" (v "g" * u f.group + laneE * u f.perLane) ]
+
+/-- The products of one lane for one group, from what `laneSetup` loaded. `parts` are the scalar
+partials, one per token. -/
+def laneProducts (c : Cfg) (f : Fmt) (laneE : E) (tokens : List Nat) (tokenIdx : Nat → E) : List St :=
   let guarded (body : List St) : List St :=
     if c.mutant == .noGuard then body else [if_ (lt (v "base" + v "j") (p "k")) body]
+  let decoded : E :=
+    if f.bits == 2 then call "t2Decode" [band (shr (v "byte") (v "j" * u 2)) (u 3)]
+    else call "gDecode" [v "byte", (if f.hiBytes > 0 then v "hbyte" else u 0), laneE, v "j"]
   (tokens.map fun x => let_ fT s!"part{x}" (fl 0.0)) ++
-  [ for_ "j" (u 0) (u 4)
+  [ for_ "j" (u 0) (u f.perLane)
       (guarded
-        ([ let_ fT "wf" (toF (call "t2Decode" [band (shr (v "byte") (v "j" * u 2)) (u 3)])) ] ++
+        ([ let_ fT "wf" (toF decoded) ] ++
          tokens.map fun x =>
            if_ (lt (tokenIdx x) (p "tokens"))
              [ setv s!"part{x}"
@@ -222,7 +283,7 @@ def scaleInto (tokens : List Nat) : List St :=
 
 /-! ### A16, serial: one thread per output, the 32 lanes in a local array -/
 
-def a16Serial (c : Cfg) : Kernel :=
+def a16Serial (c : Cfg) (f : Fmt) : Kernel :=
   let tokenIdx : Nat → E := fun _ => v "t"
   let fold : List St :=
     if c.mutant == .sequentialFold then
@@ -244,21 +305,20 @@ def a16Serial (c : Cfg) : Kernel :=
         ([ let_ uT "gi" (v "row" * p "groups" + v "g")
          , let_ fT "scale" (call "f16ToF32" [toU (at_ "scales" (v "gi"))])
          , for_ "l" (u 0) (u 32)
-             ([ let_ uT "byte" (toU (at_ "qdata" (v "gi" * u 32 + v "l")))
-              , let_ uT "base" (v "g" * u 128 + v "l" * u 4) ] ++
-              laneProducts c [0] tokenIdx ++
+             (laneSetup f (v "l") ++
+              laneProducts c f (v "l") [0] tokenIdx ++
               [ letP fT "pr0" (v "part0" * v "scale")
               , setIdx (v "lane") (v "l") (at_ "lane" (v "l") + v "pr0") ]) ]) ] ++
     fold ++ storeStmts c "tot"
-  mk c s!"t2_a16_serial{suffix c}" "T2Params" t2Fields (a16Bufs c) 64 (helpersA16 c) [dtid]
-    (Dag.single body)
+  mk c s!"{f.name}_a16_serial{suffix c}" s!"{f.name.capitalize}Params" linFields (a16Bufs c f) 64
+    (helpersA16 c f) [dtid] (Dag.single body)
 
 /-! ### A16, lanes: a 32-thread group per output (and per `U` tokens)
 
 Seven processes in a chain: each lane's partial sum into `sh`, five folds of the tree (`sh[l] +=
 sh[l + off]` for `off` 16, 8, 4, 2, 1), lane 0's store. Each edge is a barrier. -/
 
-def a16Lanes (c : Cfg) (tokensPerGroup : Nat) : Kernel :=
+def a16Lanes (c : Cfg) (f : Fmt) (tokensPerGroup : Nat) : Kernel :=
   let us := List.range tokensPerGroup
   let tokenIdx : Nat → E := fun x => v "t0" + u x
   let shAt (x : Nat) (e : E) : E := .index (.index (.var "sh") (u x)) e
@@ -293,13 +353,14 @@ def a16Lanes (c : Cfg) (tokensPerGroup : Nat) : Kernel :=
         [ for_ "g" (u 0) (p "groups")
             ([ let_ uT "gi" (v "row" * p "groups" + v "g")
              , let_ fT "scale" (call "f16ToF32" [toU (at_ "scales" (v "gi"))])
-             , let_ uT "byte" (toU (at_ "qdata" (v "gi" * u 32 + v "lane")))
-             , let_ uT "base" (v "g" * u 128 + v "lane" * u 4) ] ++
-             laneProducts c us tokenIdx ++ scaleInto us) ] ++
+             ] ++
+             laneSetup f (v "lane") ++
+             laneProducts c f (v "lane") us tokenIdx ++ scaleInto us) ] ++
         (us.map fun x => setIdx (at_ "sh" (u x)) (v "lane") (v s!"acc{x}")) }
   let store : Proc := { name := "finish", body := [if_ (eq (v "lane") (u 0)) finish] }
-  let name := if tokensPerGroup == 1 then "t2_a16_lanes" else "t2_a16_wide"
-  mk c s!"{name}{suffix c}" "T2Params" t2Fields (a16Bufs c) 32 (helpersA16 c) [gid, gtid]
+  let name := if tokensPerGroup == 1 then "lanes" else "wide"
+  mk c s!"{f.name}_a16_{name}{suffix c}" s!"{f.name.capitalize}Params" linFields (a16Bufs c f) 32
+    (helpersA16 c f) [gid, gtid]
     (Dag.chain prelude [{ name := "sh", elemType := fT, dims := [tokensPerGroup, 32] }]
       ([partialSums] ++ folds ++ [store]))
 
@@ -368,7 +429,7 @@ def a8Serial (c : Cfg) : Kernel :=
          , let_ uT "cbase" (v "t" * p "groups" * u 128 + v "g" * u 128) ] ++
          groupDot ++ groupTerm "term" ++ [setv "tot" (v "tot" + v "term")]) ] ++
     storeStmts c "tot"
-  mk c s!"t2_a8_serial{suffix c}" "T2Params" t2Fields (a8Bufs c) 64 (helpersA8 c) [dtid] (Dag.single body)
+  mk c s!"t2_a8_serial{suffix c}" "T2Params" linFields (a8Bufs c) 64 (helpersA8 c) [dtid] (Dag.single body)
 
 /-- A8 over 32 lanes, two processes: lane `l` takes groups `l, l + 32, ...` whole and parks each
 `(dot * sw) * sx` in `pg`; then lane 0 adds them in group order, as `serial` does. -/
@@ -395,7 +456,7 @@ def a8Lanes (c : Cfg) : Kernel :=
         [ if_ (eq (v "lane") (u 0))
             ([ let_ fT "tot" (fl 0.0)
              , for_ "g" (u 0) (p "groups") [setv "tot" (v "tot" + at_ "pg" (v "g"))] ] ++ storeStmts c "tot") ] }
-  mk c s!"t2_a8_lanes{suffix c}" "T2Params" t2Fields (a8Bufs c) 32 (helpersA8 c) [gid, gtid]
+  mk c s!"t2_a8_lanes{suffix c}" "T2Params" linFields (a8Bufs c) 32 (helpersA8 c) [gid, gtid]
     (Dag.chain prelude [{ name := "pg", elemType := fT, dims := [maxGroups] }] [spread, total])
 
 /-! ### SwiGLU: `silu(gate) * up` over the `[gate | up]` plane -/
@@ -417,8 +478,11 @@ def siluMulKernel : Kernel :=
 
 /-! ## The kernel set -/
 
-/-- The kernels the library ships, under one configuration. -/
+/-- The kernels the library ships, under one configuration: the ternary linear with its A8 route and
+SwiGLU, then the A16 route of each signed-integer format. -/
 def kernels (c : Cfg) : List Kernel :=
-  [ a16Serial c, a16Lanes c 1, a16Lanes c wideTokens, a8Quantize c, a8Serial c, a8Lanes c, siluMulKernel ]
+  [ a16Serial c Fmt.t2, a16Lanes c Fmt.t2 1, a16Lanes c Fmt.t2 wideTokens, a8Quantize c, a8Serial c
+  , a8Lanes c, siluMulKernel ] ++
+  Fmt.ints.flatMap fun f => [a16Serial c f, a16Lanes c f 1, a16Lanes c f wideTokens]
 
-end Ninfer.Ops.LinearT2
+end Ninfer.Ops.Linear

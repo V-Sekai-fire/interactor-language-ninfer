@@ -1,21 +1,27 @@
 -- SPDX-License-Identifier: Apache-2.0
 import Ninfer.Num
 import Ninfer.Rng
-import Ninfer.Ops.LinearT2.Spec
-import Ninfer.Ops.LinearT2.Kernels
+import Ninfer.Ops.Linear.Spec
+import Ninfer.Ops.Linear.Kernels
 
 /-!
-# `ninfer_t2` — fixtures for the ternary linear kernels, and the verdicts on what hosts return
+# `ninfer_linear` — fixtures for the linear kernels, and the verdicts on what hosts return
 
-    ninfer_t2 plan                             one line per (case, variant): <case> <variant> <kernel> <cpu|gpu>
-    ninfer_t2 write <dir> <case> [<control>]   inputs, expected outputs and a host script per variant
-    ninfer_t2 check <dir> <variant>            judge `<variant>.*.out` against the expectation
-    ninfer_t2 selftest                         the checks that need no host
+    ninfer_linear plan                             one line per (case, variant): <case> <variant> <kernel> <cpu|gpu>
+    ninfer_linear write <dir> <case> [<control>]   inputs, expected outputs and a host script per variant
+    ninfer_linear check <dir> <variant>            judge `<variant>.*.out` against the expectation
+    ninfer_linear layout <dir> <format>            the model against a weight the engine's fixtures built
+    ninfer_linear selftest                         the checks that need no host
 
 A *host* (`tests/kernels/cpu_host.cpp`, `tests/kernels/metal_host.swift`) only dispatches: it reads
 a script, runs the kernel over the files, and writes the buffers back. Every verdict is made here.
 
-The expectations are the reference model of `Ninfer.Ops.LinearT2.Spec`:
+The cases belong to a format (`Fmt`). The ternary format has all four kinds, and its ids are bare
+(`e0`, `c1024x5120t1`, `q300t2`, `s192`). The signed-integer formats `q4`, `q5`, `q6` and `q8` have
+the A16 route only, as the engine tests them, and their ids start with the format (`q4-e0`,
+`q8-c130x5120t2`).
+
+The expectations are the reference model of `Ninfer.Ops.Linear.Spec`:
 
 * `exact` cases: the bfloat16 plane must equal the model's bit for bit, columns outside the written
   range untouched; the `_f32` probes must return the model's FP32 total bit for bit (a bfloat16
@@ -33,7 +39,7 @@ A control (`flip-row`) hands the kernel weights with one row's signs flipped whi
 stays; its verdict must be FAIL.
 -/
 
-open Ninfer Ninfer.Num Ninfer.Slang Ninfer.Slang.Dag Ninfer.Ops.LinearT2
+open Ninfer Ninfer.Num Ninfer.Slang Ninfer.Slang.Dag Ninfer.Ops.Linear
 
 /-! ## Cases -/
 
@@ -51,6 +57,8 @@ structure Case where
   outLd : Nat
   outOff : Nat := 0
   accumulate : Bool := false
+  /-- The weight format. -/
+  fmt : Fmt := Fmt.t2
 
 def kindName : Kind → String
   | .exact => "exact" | .crit => "crit" | .quant => "quant" | .swiglu => "swiglu"
@@ -83,12 +91,45 @@ def quantCases : List Case :=
 def swigluCases : List Case :=
   [ { id := "s192", kind := .swiglu, n := 192, k := 5120, t := 5, rows := 192, outLd := 192 } ]
 
-def allCases : List Case := exactCases ++ critCases ++ quantCases ++ swigluCases
+/-- The A16 cases of a signed-integer format, at the shapes of the ternary ones where they make
+sense: ragged K (200, 129, 3, which leave a group partly and wholly past K), a row range, a column
+range, `accumulate`, tokens that are not a multiple of four, and a long K. -/
+def intCases (f : Fmt) : List Case :=
+  let mk (id : String) (n k t rowBegin rows outLd outOff : Nat) (accumulate : Bool) : Case :=
+    { id := s!"{f.name}-{id}", kind := .exact, fmt := f, n, k, t, rowBegin, rows, outLd, outOff, accumulate }
+  [ mk "e0" 64 5120 1 0 64 64 0 false
+  , mk "e1" 96 200 5 0 96 96 0 false
+  , mk "e2" 130 6144 3 17 70 70 0 false
+  , mk "e3" 130 5120 4 30 40 100 25 false
+  , mk "e4" 96 384 6 10 48 48 0 true
+  , mk "e5" 40 17408 2 0 40 40 0 false
+  , mk "e6" 33 129 7 1 31 40 5 true
+  , mk "e7" 8 3 5 0 8 8 0 false ]
+
+/-- The engine's accuracy criterion for a signed-integer format, at the widths of its A16 tests. -/
+def intCritCases (f : Fmt) : List Case :=
+  let mk (n k : Nat) (ts : List Nat) : List Case :=
+    ts.map fun t => { id := s!"{f.name}-c{n}x{k}t{t}", kind := .crit, fmt := f, n, k, t, rows := n, outLd := n }
+  mk 1024 5120 [1, 17] ++ mk 130 5120 [1, 2, 17, 65] ++ mk 512 200 [1, 17, 65]
+
+def allCases : List Case :=
+  exactCases ++ critCases ++ quantCases ++ swigluCases ++ Fmt.ints.flatMap fun f => intCases f ++ intCritCases f
+
+/-- Whether `pat` occurs in `s`. -/
+def hasPart (s pat : String) : Bool := (s.splitOn pat).length > 1
 
 def findCase (id : String) : Option Case := allCases.find? (·.id == id)
 
 /-- The variants of a case: (name, kernel). The `_f32` ones are probes. -/
 def variants (c : Case) : List (String × String) :=
+  if c.fmt.bits != 2 then
+    let k (s : String) := s!"{c.fmt.name}_a16_{s}"
+    match c.kind with
+    | .exact => [ (k "serial", k "serial"), (k "lanes", k "lanes"), (k "wide", k "wide")
+                , (k "serial_f32", k "serial_f32"), (k "lanes_f32", k "lanes_f32"), (k "wide_f32", k "wide_f32") ]
+    | .crit => [ (k "serial", k "serial"), (k "lanes", k "lanes") ]
+    | _ => []
+  else
   match c.kind with
   | .exact =>
     [ ("a16_serial", "t2_a16_serial"), ("a16_lanes", "t2_a16_lanes")
@@ -167,6 +208,14 @@ def flipRow (q : ByteArray) (r groups : Nat) : ByteArray := Id.run do
     out := out.set! i (b ^^^ ((b &&& 0x55) <<< 1))
   return out
 
+/-- XOR 0xFF into every code byte of row `r`: every code of the row changes (the control for the
+signed-integer formats, whose codes have no sign to flip bit by bit). -/
+def flipRowInt (q : ByteArray) (r groups : Nat) : ByteArray := Id.run do
+  let mut out := q
+  for i in [r * groups * codeBytes : (r + 1) * groups * codeBytes] do
+    out := out.set! i (out.get! i ^^^ 0xFF)
+  return out
+
 structure Fixture where
   w : Weight
   abits : Array UInt16
@@ -176,7 +225,8 @@ structure Fixture where
 def makeFixture (c : Case) : Fixture :=
   let seed : UInt64 := (c.n * 7 + c.k + c.t).toUInt64
   let legal := c.kind != .exact
-  let w := makeWeight seed c.n c.k legal
+  -- about half of the scales are negative, as in the fixtures of the engine
+  let w := makeWeight seed c.n c.k legal c.fmt true
   let spread := c.kind == .exact
   let (ab, av) := makeActivations (seed + 1) c.t c.k spread
   let (ab, av) := if c.kind == .quant then specialActivations ab c.t c.k else (ab, av)
@@ -194,7 +244,7 @@ def makeFixture (c : Case) : Fixture :=
 
 /-! ## The host script of one variant -/
 
-def groupsOfCase (c : Case) : Nat := groupsOf c.k
+def groupsOfCase (c : Case) : Nat := groupsOfFmt c.fmt c.k
 
 def ceilDiv (a b : Nat) : Nat := (a + b - 1) / b
 
@@ -208,8 +258,8 @@ def script (c : Case) (variant kernel : String) : String :=
   let grid : Nat × Nat × Nat :=
     if kernel == "t2_a8_quantize" then (ceilDiv (g * c.t) 64, 1, 1)
     else if kernel == "t2_silu_mul" then (ceilDiv (c.t * (c.rows / 2)) 256, 1, 1)
-    else if kernel.startsWith "t2_a16_serial" || kernel.startsWith "t2_a8_serial" then (ceilDiv (c.rows * c.t) 64, 1, 1)
-    else if kernel.startsWith "t2_a16_wide" then (c.rows, ceilDiv c.t 4, 1)
+    else if hasPart kernel "_a16_serial" || kernel.startsWith "t2_a8_serial" then (ceilDiv (c.rows * c.t) 64, 1, 1)
+    else if hasPart kernel "_a16_wide" then (c.rows, ceilDiv c.t 4, 1)
     else (c.rows, c.t, 1)
   let probe := kernel.endsWith "_f32"
   let dstIn := if probe then "probe0.bin" else "init.bin"
@@ -219,8 +269,12 @@ def script (c : Case) (variant kernel : String) : String :=
       [ "buf 1 2 a.bin -", s!"buf 2 1 qinit.bin {variant}.codes.out", s!"buf 3 2 xinit.bin {variant}.xscales.out" ]
     else if kernel == "t2_silu_mul" then
       [ "buf 1 2 plane.bin -", s!"buf 2 2 sinit.bin {variant}.dst.out" ]
-    else if kernel.startsWith "t2_a16" then
-      [ "buf 1 1 q.bin -", "buf 2 2 s.bin -", "buf 3 2 a.bin -", s!"buf 4 {dstBytes} {dstIn} {variant}.dst.out" ]
+    else if hasPart kernel "_a16_" then
+      if c.fmt.hiBytes > 0 then
+        [ "buf 1 1 q.bin -", "buf 2 1 qh.bin -", "buf 3 2 s.bin -", "buf 4 2 a.bin -"
+        , s!"buf 5 {dstBytes} {dstIn} {variant}.dst.out" ]
+      else
+        [ "buf 1 1 q.bin -", "buf 2 2 s.bin -", "buf 3 2 a.bin -", s!"buf 4 {dstBytes} {dstIn} {variant}.dst.out" ]
     else
       [ "buf 1 1 q.bin -", "buf 2 2 s.bin -", "buf 3 1 codes.bin -", "buf 4 2 xs.bin -"
       , s!"buf 5 {dstBytes} {dstIn} {variant}.dst.out" ]
@@ -235,26 +289,33 @@ def writeCase (dir : String) (c : Case) (control : Option String) : IO UInt32 :=
   let fx := makeFixture c
   let w := fx.w
   let g := groupsOfCase c
-  if g > maxGroups then
+  let ternary := c.fmt.bits == 2
+  if ternary && g > maxGroups then
     IO.eprintln s!"{c.id}: {g} groups exceed the A8 lanes kernel's {maxGroups}"
     return 2
-  let q := if control == some "flip-row" then flipRow w.q (c.rowBegin + 7) g else w.q
+  let q :=
+    if control == some "flip-row" then
+      (if ternary then flipRow w.q (c.rowBegin + 7) g else flipRowInt w.q (c.rowBegin + 7) g)
+    else w.q
   IO.FS.writeBinFile s!"{dir}/q.bin" q
+  if c.fmt.hiBytes > 0 then IO.FS.writeBinFile s!"{dir}/qh.bin" w.qh
   IO.FS.writeBinFile s!"{dir}/s.bin" (u16Bytes w.s)
   -- The activations are followed by NaN. A kernel owns `[t, k]` and nothing after it: the padding of
   -- the last group (where the weight codes are zero) is not its to read, and 0 * NaN is NaN, so a
   -- kernel that reads it fails the verdict instead of passing on a lucky zero.
-  let tail : Array UInt16 := Array.replicate (g * groupK - c.k) 0x7FC0
+  let tail : Array UInt16 := Array.replicate (g * c.fmt.group - c.k) 0x7FC0
   IO.FS.writeBinFile s!"{dir}/a.bin" (u16Bytes (fx.abits ++ tail))
   IO.FS.writeBinFile s!"{dir}/init.bin" (u16Bytes fx.init)
   -- outputs start as poison (the engine's 0xff): a position a kernel does not write cannot pass
   IO.FS.writeBinFile s!"{dir}/probe0.bin" (u32Bytes (Array.replicate (c.t * c.rows) 0xFFFFFFFF))
-  IO.FS.writeBinFile s!"{dir}/qinit.bin" (ByteArray.mk (Array.replicate (c.t * g * groupK) 0xFF))
-  IO.FS.writeBinFile s!"{dir}/xinit.bin" (u16Bytes (Array.replicate (c.t * g) 0xFFFF))
-  IO.FS.writeBinFile s!"{dir}/sinit.bin" (u16Bytes (Array.replicate (c.t * (c.rows / 2)) 0xFFFF))
-  let (codes, xs) := quantize fx.avals c.t c.k
-  IO.FS.writeBinFile s!"{dir}/codes.bin" codes
-  IO.FS.writeBinFile s!"{dir}/xs.bin" (u16Bytes xs)
+  -- the A8 route and SwiGLU belong to the ternary format
+  let (codes, xs) := if ternary then quantize fx.avals c.t c.k else (ByteArray.empty, #[])
+  if ternary then
+    IO.FS.writeBinFile s!"{dir}/qinit.bin" (ByteArray.mk (Array.replicate (c.t * g * groupK) 0xFF))
+    IO.FS.writeBinFile s!"{dir}/xinit.bin" (u16Bytes (Array.replicate (c.t * g) 0xFFFF))
+    IO.FS.writeBinFile s!"{dir}/sinit.bin" (u16Bytes (Array.replicate (c.t * (c.rows / 2)) 0xFFFF))
+    IO.FS.writeBinFile s!"{dir}/codes.bin" codes
+    IO.FS.writeBinFile s!"{dir}/xs.bin" (u16Bytes xs)
   IO.FS.writeFile s!"{dir}/case.txt"
     (s!"id {c.id}\nkind {kindName c.kind}\nn {c.n}\nk {c.k}\nt {c.t}\nrowBegin {c.rowBegin}\nrows {c.rows}\n"
       ++ s!"outLd {c.outLd}\noutOff {c.outOff}\naccumulate {if c.accumulate then 1 else 0}\n")
@@ -264,10 +325,11 @@ def writeCase (dir : String) (c : Case) (control : Option String) : IO UInt32 :=
     IO.FS.writeBinFile s!"{dir}/want_total16.bin" (u32Bytes (f32Bits t16))
     IO.FS.writeBinFile s!"{dir}/want_dst16.bin"
       (u16Bytes (place t16 c.t c.rows c.outLd c.outOff c.accumulate fx.init))
-    let t8 := a8Totals w codes xs c.t c.rowBegin c.rows
-    IO.FS.writeBinFile s!"{dir}/want_total8.bin" (u32Bytes (f32Bits t8))
-    IO.FS.writeBinFile s!"{dir}/want_dst8.bin"
-      (u16Bytes (place t8 c.t c.rows c.outLd c.outOff c.accumulate fx.init))
+    if ternary then
+      let t8 := a8Totals w codes xs c.t c.rowBegin c.rows
+      IO.FS.writeBinFile s!"{dir}/want_total8.bin" (u32Bytes (f32Bits t8))
+      IO.FS.writeBinFile s!"{dir}/want_dst8.bin"
+        (u16Bytes (place t8 c.t c.rows c.outLd c.outOff c.accumulate fx.init))
   | .crit =>
     IO.FS.writeBinFile s!"{dir}/ref64.bin" (f64Bytes (ref64 w fx.avals c.t c.rowBegin c.rows))
   | .quant =>
@@ -335,7 +397,7 @@ def check (dir variant : String) : IO UInt32 := do
   let c ← readCase dir
   let rd (name : String) : IO ByteArray := IO.FS.readBinFile s!"{dir}/{name}"
   let probe := variant.endsWith "_f32"
-  let isA16 := variant.startsWith "a16"
+  let isA16 := variant.startsWith "a16" || hasPart variant "_a16_"
   let (msg, ok) ← match c.kind, variant with
     | .quant, _ =>
       let gotC ← rd s!"{variant}.codes.out"
@@ -415,7 +477,10 @@ def dagSelftest : IO Nat := do
   report "the DAG of every shipped kernel passes the check" shippedOk s!"{shipped.length} kernels, {procs} processes"
   if !shippedOk then fails := fails + 1
   -- barriers: the fused kernel has one per edge level, no process has any
-  for (name, want) in ([("t2_a16_lanes", 6), ("t2_a16_wide", 6), ("t2_a8_lanes", 1), ("t2_a16_serial", 0)] : List (String × Nat)) do
+  let barrierWant : List (String × Nat) :=
+    [("t2_a16_lanes", 6), ("t2_a16_wide", 6), ("t2_a8_lanes", 1), ("t2_a16_serial", 0)] ++
+    Fmt.ints.flatMap fun f => [(s!"{f.name}_a16_lanes", 6), (s!"{f.name}_a16_wide", 6), (s!"{f.name}_a16_serial", 0)]
+  for (name, want) in barrierWant do
     match shipped.find? (·.name == name) with
     | none =>
       report s!"{name} is shipped" false "missing"
@@ -548,8 +613,161 @@ def selftest : IO UInt32 := do
   report "ties round to even" (tieCodes == [0, 2, 2, 4, 4, 6, -2, 0] && xs[groupsOf qc.k]! == 0x3C00)
     s!"codes {tieCodes}, scale bits {xs[groupsOf qc.k]!}"
   if !(tieCodes == [0, 2, 2, 4, 4, 6, -2, 0] && xs[groupsOf qc.k]! == 0x3C00) then fails := fails + 1
+  -- the signed-integer formats: every code at every input survives the engine's packer and its reader
+  for f in Fmt.ints do
+    let span := (f.qmax - f.qmin + 1).toNat
+    let mut bad := 0
+    for i in [0:f.group] do
+      for d in [0:span] do
+        let code := f.qmin + (d : Int)
+        let codes : Array Int := (Array.replicate f.group (0 : Int)).set! i code
+        let (nib, hi) := packGroup f codes
+        let back := (List.range f.group).map fun j => unpackCode f nib hi 0 0 j
+        if back != codes.toList then bad := bad + 1
+    report s!"{f.name}: every code at every input survives pack and unpack" (bad == 0)
+      s!"{f.group} inputs x {span} codes, {bad} differ"
+    if bad != 0 then fails := fails + 1
+  -- ... and the words come out as the engine's `pack_lowbit_group` writes them (worked by hand)
+  let vec (f : Fmt) (set : List (Nat × Int)) : ByteArray × ByteArray :=
+    packGroup f (set.foldl (fun (a : Array Int) (p : Nat × Int) => a.set! p.1 p.2) (Array.replicate f.group (0 : Int)))
+  let w4 := vec Fmt.q4 [(0, -8), (1, 7), (2, -1)]
+  let w5 := vec Fmt.q5 [(0, -16), (1, 15), (9, -1)]
+  let w6 := vec Fmt.q6 [(0, -32), (1, 31), (5, -1)]
+  let w8 := vec Fmt.q8 [(0, -127), (1, 127), (2, -1)]
+  let w2 := vec Fmt.t2 [(0, 1), (1, -1), (3, -1)]
+  let vecOk :=
+    w2.1.get! 0 == 0xCD
+    && (w4.1.get! 0 == 0x78 && w4.1.get! 1 == 0x0F)
+    && (w5.1.get! 0 == 0xF0 && w5.1.get! 4 == 0xF0 && w5.2.get! 0 == 0x01 && w5.2.get! 1 == 0x02)
+    && (w6.1.get! 0 == 0xF0 && w6.1.get! 2 == 0xF0 && w6.2.get! 0 == 0x06 && w6.2.get! 1 == 0x0C)
+    && (w8.1.get! 0 == 0x81 && w8.1.get! 1 == 0x7F && w8.1.get! 2 == 0xFF)
+  report "the integer packers write the words the engine's pack_lowbit_group writes" vecOk
+    "t2 0xCD; q4 0x78 0x0F; q5 nibbles 0xF0 and high bits 0x01 0x02; q6 high bits 0x06 0x0C; q8 0x81 0x7F 0xFF"
+  if !vecOk then fails := fails + 1
+  -- the ternary packer: -1, 0 and +1 at every input, read back by the decoder of the model
+  let mut badT2 := 0
+  for i in [0:128] do
+    for code in ([-1, 0, 1] : List Int) do
+      let (nib, _) := packGroup Fmt.t2 ((Array.replicate 128 (0 : Int)).set! i code)
+      let w : Weight := { n := 1, k := 128, groups := 1, q := nib, s := #[0x3C00] }
+      if w.value 0 0 i != code then badT2 := badT2 + 1
+  report "t2: every code at every input survives pack and decode" (badT2 == 0) s!"128 inputs x 3 codes, {badT2} differ"
+  if badT2 != 0 then fails := fails + 1
+  -- the fixtures: codes in range, zero past K, a wholly padded group has scale 0, half the scales negative
+  for f in Fmt.ints do
+    let w := makeWeight 5 40 200 true f true
+    let mut inRange := true
+    let mut pastZero := true
+    for row in [0:w.n] do
+      for g in [0:w.groups] do
+        for i in [0:f.group] do
+          let v := w.value row g i
+          if v < f.qmin || v > f.qmax then inRange := false
+          if g * f.group + i ≥ w.k && v != 0 then pastZero := false
+    let padScale := (List.range w.groups).all fun g => g * f.group < w.k || w.s[g]! == 0
+    let big := makeWeight 11 64 5120 true f true
+    let neg := big.s.foldl (fun n b => if b &&& 0x8000 != 0 then n + 1 else n) 0
+    let frac := neg.toFloat / big.s.size.toFloat
+    let ok := inRange && pastZero && padScale && frac > 0.4 && frac < 0.6
+    report s!"{f.name}: codes in range, zero past K, padded groups unscaled, scales signed" ok
+      s!"in range {inRange}, past K zero {pastZero}, padded scale 0 {padScale}, {frac} of scales negative"
+    if !ok then fails := fails + 1
+  -- the summation order is visible in these formats too
+  for f in [Fmt.q4, Fmt.q8] do
+    let oc : Case := { id := "o", kind := .exact, fmt := f, n := 64, k := 5120, t := 4, rows := 64, outLd := 64 }
+    let ofx := makeFixture oc
+    let tr := a16Totals ofx.w ofx.avals oc.t 0 oc.rows
+    let pl := a16Totals ofx.w ofx.avals oc.t 0 oc.rows true
+    let df := (List.range tr.size).filter (fun i => tr[i]!.toBits != pl[i]!.toBits) |>.length
+    report s!"{f.name}: the order control sees a different order" (df > tr.size / 4) s!"{df} of {tr.size} FP32 totals differ"
+    if df ≤ tr.size / 4 then fails := fails + 1
   fails := fails + (← dagSelftest)
   return (if fails == 0 then 0 else 1)
+
+/-! ## layout: the model against the engine's own weight -/
+
+/-- A little-endian unsigned integer of `n` bytes at `off`. -/
+def leNat (b : ByteArray) (off n : Nat) : Nat :=
+  (List.range n).foldl (fun a i => a ||| ((b.get! (off + i)).toNat <<< (8 * i))) 0
+
+/-- The number under `key` in `key value` lines. -/
+def keyNat (txt key : String) : Option Nat :=
+  (txt.splitOn "\n").findSome? fun l =>
+    match l.splitOn " " with
+    | [k, v] => if k == key then v.toNat? else none
+    | _ => none
+
+/-- Hold the model to a weight the engine's own fixture code built and decoded
+(`tests/layout/oracle.cpp`): the payload, its planes and offsets, the engine's logical weights, and
+its FP64 dot products. The model must read the same weights bit for bit, see zero codes and unscaled
+groups past K, pack its codes into the engine's bytes, and reproduce the engine's reference. -/
+def layoutCheck (dir name : String) : IO UInt32 := do
+  let some f := Fmt.ofName name | do IO.eprintln s!"layout: unknown format {name}"; return 2
+  let txt ← IO.FS.readFile s!"{dir}/layout.txt"
+  let get (key : String) : Nat := (keyNat txt key).getD 0
+  let n := get "n"
+  let k := get "k"
+  let paddedK := get "paddedK"
+  let tokens := get "tokens"
+  let groups := paddedK / f.group
+  let payload ← IO.FS.readBinFile s!"{dir}/payload.bin"
+  let logicalB ← IO.FS.readBinFile s!"{dir}/logical.bin"
+  let xB ← IO.FS.readBinFile s!"{dir}/x.bin"
+  let dotB ← IO.FS.readBinFile s!"{dir}/dot.bin"
+  -- the interface first: the engine's group size and plane sizes are the ones the model assumes
+  let planesOk :=
+    get "group" == f.group && paddedK % groupK == 0 && k ≤ paddedK
+    && get "codeBytes" == n * groups * codeBytes && get "highBytes" == n * groups * f.hiBytes
+    && get "scaleBytes" == n * groups * 2 && logicalB.size == 8 * n * k && xB.size == 4 * tokens * k
+    && dotB.size == 8 * tokens * n
+  if !planesOk then
+    IO.println s!"FAIL  layout {name}: the engine's planes are not the model's (group {get "group"}, code bytes {get "codeBytes"}, high bytes {get "highBytes"}, scale bytes {get "scaleBytes"})"
+    return 1
+  let q := payload.extract 0 (get "codeBytes")
+  let qh := if f.hiBytes == 0 then ByteArray.empty else payload.extract (get "highOffset") (get "highOffset" + get "highBytes")
+  let s : Array UInt16 := (List.range (n * groups)).toArray.map fun i => (leNat payload (get "scaleOffset" + 2 * i) 2).toUInt16
+  let w : Weight := { n, k, groups, q, s, fmt := f, qh }
+  -- 1. every weight, bit for bit
+  let mut bad1 := 0
+  let mut nonzero := 0
+  let mut first := ""
+  for row in [0:n] do
+    for col in [0:k] do
+      let want := (leNat logicalB (8 * (row * k + col)) 8).toUInt64
+      let got := Float.ofInt (w.value row (col / f.group) (col % f.group)) * (f16ToF32 s[row * groups + col / f.group]!).toFloat
+      if got != 0 then nonzero := nonzero + 1
+      if got.toBits != want then
+        bad1 := bad1 + 1
+        if first == "" then first := s!"row {row} column {col}: model {got}, engine {Float.ofBits want}"
+  -- 2. past K: zero codes, and a group wholly past K has the scale 0
+  let mut bad2 := 0
+  for row in [0:n] do
+    for col in [k:paddedK] do
+      if w.value row (col / f.group) (col % f.group) != 0 then bad2 := bad2 + 1
+    for g in [0:groups] do
+      if g * f.group ≥ k && s[row * groups + g]! != 0 then bad2 := bad2 + 1
+  -- 3. the model's codes, packed again, are the engine's bytes
+  let mut bad3 := 0
+  for row in [0:n] do
+    for g in [0:groups] do
+      let gi := row * groups + g
+      let (nib, hi) := packGroup f ((List.range f.group).toArray.map fun i => w.value row g i)
+      if nib.data != (q.extract (gi * codeBytes) ((gi + 1) * codeBytes)).data then bad3 := bad3 + 1
+      else if f.hiBytes > 0 && hi.data != (qh.extract (gi * f.hiBytes) ((gi + 1) * f.hiBytes)).data then bad3 := bad3 + 1
+  -- 4. the FP64 reference against the engine's `dot_fp64`
+  let x : FloatArray := FloatArray.mk ((List.range (tokens * k)).toArray.map fun i =>
+    (Float32.ofBits (leNat xB (4 * i) 4).toUInt32).toFloat)
+  let ref := ref64 w x tokens 0 n
+  let mut bad4 := 0
+  let mut dotNonzero := 0
+  for i in [0:tokens * n] do
+    if ref.get! i != 0 then dotNonzero := dotNonzero + 1
+    if (ref.get! i).toBits != (leNat dotB (8 * i) 8).toUInt64 then bad4 := bad4 + 1
+  -- a comparison against a mostly-zero reference proves nothing
+  let informative := nonzero * 2 > n * k && dotNonzero * 2 > tokens * n
+  let ok := bad1 == 0 && bad2 == 0 && bad3 == 0 && bad4 == 0 && informative
+  IO.println s!"{if ok then "PASS" else "FAIL"}  layout {name} {n}x{k}: {n * k} weights, {bad1} differ{if first == "" then "" else " (" ++ first ++ ")"}; past K {bad2} wrong; repack of {n * groups} groups {bad3} differ; {tokens * n} dot products {bad4} differ; informative {informative} ({nonzero} nonzero weights)"
+  return (if ok then 0 else 1)
 
 /-! ## main -/
 
@@ -569,7 +787,8 @@ def main (args : List String) : IO UInt32 := do
     | some c => writeCase dir c (some control)
     | none => IO.eprintln s!"unknown case {id}"; return 2
   | ["check", dir, variant] => check dir variant
+  | ["layout", dir, name] => layoutCheck dir name
   | ["selftest"] => selftest
   | _ =>
-    IO.eprintln "usage: ninfer_t2 plan | write <dir> <case> [flip-row] | check <dir> <variant> | selftest"
+    IO.eprintln "usage: ninfer_linear plan | write <dir> <case> [flip-row] | check <dir> <variant> | layout <dir> <t2|q4|q5|q6|q8> | selftest"
     return 2

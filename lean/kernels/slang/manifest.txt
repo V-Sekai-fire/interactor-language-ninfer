@@ -68,3 +68,185 @@ kernel t2_silu_mul threads 256 params 2 procs 1
 buf 1 plane uint16_t 2 ro
 buf 2 dst uint16_t 2 rw
 proc 0 t2_silu_mul all
+kernel q4_a16_serial threads 64 params 8 procs 1
+buf 1 qdata uint8_t 1 ro
+buf 2 scales uint16_t 2 ro
+buf 3 act uint16_t 2 ro
+buf 4 dst uint16_t 2 rw
+proc 0 q4_a16_serial all
+kernel q4_a16_lanes threads 32 params 8 procs 7
+buf 1 qdata uint8_t 1 ro
+buf 2 scales uint16_t 2 ro
+buf 3 act uint16_t 2 ro
+buf 4 dst uint16_t 2 rw
+scratch sh float 4 32
+proc 0 q4_a16_lanes_p0_partial partial
+proc 1 q4_a16_lanes_p1_fold16 fold16
+proc 2 q4_a16_lanes_p2_fold8 fold8
+proc 3 q4_a16_lanes_p3_fold4 fold4
+proc 4 q4_a16_lanes_p4_fold2 fold2
+proc 5 q4_a16_lanes_p5_fold1 fold1
+proc 6 q4_a16_lanes_p6_finish finish
+edge 0 1
+edge 1 2
+edge 2 3
+edge 3 4
+edge 4 5
+edge 5 6
+kernel q4_a16_wide threads 32 params 8 procs 7
+buf 1 qdata uint8_t 1 ro
+buf 2 scales uint16_t 2 ro
+buf 3 act uint16_t 2 ro
+buf 4 dst uint16_t 2 rw
+scratch sh float 4 128
+proc 0 q4_a16_wide_p0_partial partial
+proc 1 q4_a16_wide_p1_fold16 fold16
+proc 2 q4_a16_wide_p2_fold8 fold8
+proc 3 q4_a16_wide_p3_fold4 fold4
+proc 4 q4_a16_wide_p4_fold2 fold2
+proc 5 q4_a16_wide_p5_fold1 fold1
+proc 6 q4_a16_wide_p6_finish finish
+edge 0 1
+edge 1 2
+edge 2 3
+edge 3 4
+edge 4 5
+edge 5 6
+kernel q5_a16_serial threads 64 params 8 procs 1
+buf 1 qdata uint8_t 1 ro
+buf 2 qhigh uint8_t 1 ro
+buf 3 scales uint16_t 2 ro
+buf 4 act uint16_t 2 ro
+buf 5 dst uint16_t 2 rw
+proc 0 q5_a16_serial all
+kernel q5_a16_lanes threads 32 params 8 procs 7
+buf 1 qdata uint8_t 1 ro
+buf 2 qhigh uint8_t 1 ro
+buf 3 scales uint16_t 2 ro
+buf 4 act uint16_t 2 ro
+buf 5 dst uint16_t 2 rw
+scratch sh float 4 32
+proc 0 q5_a16_lanes_p0_partial partial
+proc 1 q5_a16_lanes_p1_fold16 fold16
+proc 2 q5_a16_lanes_p2_fold8 fold8
+proc 3 q5_a16_lanes_p3_fold4 fold4
+proc 4 q5_a16_lanes_p4_fold2 fold2
+proc 5 q5_a16_lanes_p5_fold1 fold1
+proc 6 q5_a16_lanes_p6_finish finish
+edge 0 1
+edge 1 2
+edge 2 3
+edge 3 4
+edge 4 5
+edge 5 6
+kernel q5_a16_wide threads 32 params 8 procs 7
+buf 1 qdata uint8_t 1 ro
+buf 2 qhigh uint8_t 1 ro
+buf 3 scales uint16_t 2 ro
+buf 4 act uint16_t 2 ro
+buf 5 dst uint16_t 2 rw
+scratch sh float 4 128
+proc 0 q5_a16_wide_p0_partial partial
+proc 1 q5_a16_wide_p1_fold16 fold16
+proc 2 q5_a16_wide_p2_fold8 fold8
+proc 3 q5_a16_wide_p3_fold4 fold4
+proc 4 q5_a16_wide_p4_fold2 fold2
+proc 5 q5_a16_wide_p5_fold1 fold1
+proc 6 q5_a16_wide_p6_finish finish
+edge 0 1
+edge 1 2
+edge 2 3
+edge 3 4
+edge 4 5
+edge 5 6
+kernel q6_a16_serial threads 64 params 8 procs 1
+buf 1 qdata uint8_t 1 ro
+buf 2 qhigh uint8_t 1 ro
+buf 3 scales uint16_t 2 ro
+buf 4 act uint16_t 2 ro
+buf 5 dst uint16_t 2 rw
+proc 0 q6_a16_serial all
+kernel q6_a16_lanes threads 32 params 8 procs 7
+buf 1 qdata uint8_t 1 ro
+buf 2 qhigh uint8_t 1 ro
+buf 3 scales uint16_t 2 ro
+buf 4 act uint16_t 2 ro
+buf 5 dst uint16_t 2 rw
+scratch sh float 4 32
+proc 0 q6_a16_lanes_p0_partial partial
+proc 1 q6_a16_lanes_p1_fold16 fold16
+proc 2 q6_a16_lanes_p2_fold8 fold8
+proc 3 q6_a16_lanes_p3_fold4 fold4
+proc 4 q6_a16_lanes_p4_fold2 fold2
+proc 5 q6_a16_lanes_p5_fold1 fold1
+proc 6 q6_a16_lanes_p6_finish finish
+edge 0 1
+edge 1 2
+edge 2 3
+edge 3 4
+edge 4 5
+edge 5 6
+kernel q6_a16_wide threads 32 params 8 procs 7
+buf 1 qdata uint8_t 1 ro
+buf 2 qhigh uint8_t 1 ro
+buf 3 scales uint16_t 2 ro
+buf 4 act uint16_t 2 ro
+buf 5 dst uint16_t 2 rw
+scratch sh float 4 128
+proc 0 q6_a16_wide_p0_partial partial
+proc 1 q6_a16_wide_p1_fold16 fold16
+proc 2 q6_a16_wide_p2_fold8 fold8
+proc 3 q6_a16_wide_p3_fold4 fold4
+proc 4 q6_a16_wide_p4_fold2 fold2
+proc 5 q6_a16_wide_p5_fold1 fold1
+proc 6 q6_a16_wide_p6_finish finish
+edge 0 1
+edge 1 2
+edge 2 3
+edge 3 4
+edge 4 5
+edge 5 6
+kernel q8_a16_serial threads 64 params 8 procs 1
+buf 1 qdata uint8_t 1 ro
+buf 2 scales uint16_t 2 ro
+buf 3 act uint16_t 2 ro
+buf 4 dst uint16_t 2 rw
+proc 0 q8_a16_serial all
+kernel q8_a16_lanes threads 32 params 8 procs 7
+buf 1 qdata uint8_t 1 ro
+buf 2 scales uint16_t 2 ro
+buf 3 act uint16_t 2 ro
+buf 4 dst uint16_t 2 rw
+scratch sh float 4 32
+proc 0 q8_a16_lanes_p0_partial partial
+proc 1 q8_a16_lanes_p1_fold16 fold16
+proc 2 q8_a16_lanes_p2_fold8 fold8
+proc 3 q8_a16_lanes_p3_fold4 fold4
+proc 4 q8_a16_lanes_p4_fold2 fold2
+proc 5 q8_a16_lanes_p5_fold1 fold1
+proc 6 q8_a16_lanes_p6_finish finish
+edge 0 1
+edge 1 2
+edge 2 3
+edge 3 4
+edge 4 5
+edge 5 6
+kernel q8_a16_wide threads 32 params 8 procs 7
+buf 1 qdata uint8_t 1 ro
+buf 2 scales uint16_t 2 ro
+buf 3 act uint16_t 2 ro
+buf 4 dst uint16_t 2 rw
+scratch sh float 4 128
+proc 0 q8_a16_wide_p0_partial partial
+proc 1 q8_a16_wide_p1_fold16 fold16
+proc 2 q8_a16_wide_p2_fold8 fold8
+proc 3 q8_a16_wide_p3_fold4 fold4
+proc 4 q8_a16_wide_p4_fold2 fold2
+proc 5 q8_a16_wide_p5_fold1 fold1
+proc 6 q8_a16_wide_p6_finish finish
+edge 0 1
+edge 1 2
+edge 2 3
+edge 3 4
+edge 4 5
+edge 5 6

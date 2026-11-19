@@ -3,13 +3,13 @@
 //
 //   cpu_host [--lanes forward|reverse] <script>
 //
-// The script (grammar in lean/T2Check.lean; `tests/kernels/dag.exs` writes one per process):
+// The script (grammar in lean/LinearCheck.lean; `tests/kernels/dag.exs` writes one per process):
 //   kernel <name>                                   (informational)
 //   grid <gx> <gy> <gz>                             thread groups
 //   params <u32> ...                                the constant buffer, one u32 each
 //   buf <binding> <bytes per element> <in> <out|->  bindings 1..n, in order; `-` writes nothing back
 // File names are relative to the script's directory. This file owns no judgement: it dispatches,
-// and `ninfer_t2 check` decides. It is linked with one module's generated glue (`kernel_run`).
+// and `ninfer_linear check` decides. It is linked with one module's generated glue (`kernel_run`).
 // `--lanes reverse` runs each group's threads from the last to the first.
 #include <cstdint>
 #include <cstdio>

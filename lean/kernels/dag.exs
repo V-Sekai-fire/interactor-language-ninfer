@@ -8,7 +8,7 @@
 # operating-system sense too: it reads its inputs from files, writes its outputs to files, and exits.
 #
 #   manifest   what `emit_ninfer` wrote (kernel, buf, scratch, proc and edge lines)
-#   script     what `ninfer_t2 write` wrote for the fused kernel: grid, params, buffers by binding
+#   script     what `ninfer_linear write` wrote for the fused kernel: grid, params, buffers by binding
 #
 # Every function returns :ok / {:ok, value} / {:error, reason}.
 defmodule Ninfer.Dag do

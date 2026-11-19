@@ -4,5 +4,5 @@ import Ninfer.Rng
 import Ninfer.Slang.Dsl
 import Ninfer.Slang.Dag
 import Ninfer.Slang.Kernel
-import Ninfer.Ops.LinearT2.Spec
-import Ninfer.Ops.LinearT2.Kernels
+import Ninfer.Ops.Linear.Spec
+import Ninfer.Ops.Linear.Kernels
