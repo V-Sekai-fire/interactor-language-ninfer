@@ -40,6 +40,13 @@ ninfer_app(ninfer-serve ninfer_app_serve BUILD_ID
 ninfer_app(ninfer-calibrate ninfer_app_calibrate
   SOURCES calibrate/main.cpp
   LIBRARIES ninfer_calibration ninfer_runtime_support)
+if(NINFER_EI_PREFIX)
+  ninfer_app(ninfer-cnode ninfer_app_cnode
+    SOURCES cnode/main.cpp
+    LIBRARIES ninfer_engine)
+  target_include_directories(ninfer-cnode PRIVATE ${NINFER_EI_PREFIX}/include)
+  target_link_libraries(ninfer-cnode PRIVATE ${NINFER_EI_PREFIX}/lib/libei.a)
+endif()
 ninfer_app(ninfer-perplexity ninfer_app_perplexity BUILD_ID
   SOURCES perplexity/main.cpp perplexity/corpus.cpp perplexity/evaluation.cpp
   LIBRARIES ninfer_engine ninfer_product_logging ninfer::json)
