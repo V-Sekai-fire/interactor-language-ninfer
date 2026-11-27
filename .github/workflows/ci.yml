@@ -356,7 +356,7 @@ jobs:
           mkdir -p "$CCACHE_HOST_DIR"
           docker run --rm -v "$PWD:/src" -v "$CCACHE_HOST_DIR:/ccache" -w /src \
             -e CCACHE_DIR=/ccache -e CCACHE_MAXSIZE=4G -e NINFER_CUDA_ARCH=${{ matrix.arch }} \
-            -e NINFER_MULTICALL=ON -e NINFER_BUILD_DIR=/src/build-ci ninfer-toolchain:ci bash -c \
+            -e NINFER_MULTICALL=ON -e NINFER_EI_PREFIX=auto -e NINFER_BUILD_DIR=/src/build-ci ninfer-toolchain:ci bash -c \
             'ccache --zero-stats && scripts/build-native.sh configure && scripts/build-native.sh build && ccache --show-stats' \
             > build-ci.log 2>&1 &
           build=$!
