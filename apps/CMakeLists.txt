@@ -1,6 +1,7 @@
 # Every program links the whole kernel image (~0.5 GB per architecture). NINFER_MULTICALL links the
 # five into one executable, ninfer-multicall (cmake/NinferBundles.cmake), with each program name a
 # symlink to it beside it: the container image carries the kernels once instead of five times.
+# With NINFER_EI_PREFIX, ninfer-cnode (the Erlang C node) joins the bundle as a sixth program.
 option(NINFER_MULTICALL
        "Link ninfer, ninfer-serve, ninfer-calibrate, ninfer-perplexity and ninfer-ngram-profile into one multi-call executable"
        OFF)
@@ -40,6 +41,19 @@ ninfer_app(ninfer-serve ninfer_app_serve BUILD_ID
 ninfer_app(ninfer-calibrate ninfer_app_calibrate
   SOURCES calibrate/main.cpp
   LIBRARIES ninfer_calibration ninfer_runtime_support)
+if(NINFER_EI_PREFIX)
+  ninfer_app(ninfer-cnode ninfer_app_cnode
+    SOURCES cnode/main.cpp
+    LIBRARIES ninfer_engine)
+  # ninfer_app names its target after the program in a multi-call build, not after the command.
+  if(NINFER_MULTICALL)
+    set(ninfer_cnode_target ninfer_app_cnode)
+  else()
+    set(ninfer_cnode_target ninfer-cnode)
+  endif()
+  target_include_directories(${ninfer_cnode_target} PRIVATE ${NINFER_EI_PREFIX}/include)
+  target_link_libraries(${ninfer_cnode_target} PRIVATE ${NINFER_EI_PREFIX}/lib/libei.a)
+endif()
 ninfer_app(ninfer-perplexity ninfer_app_perplexity BUILD_ID
   SOURCES perplexity/main.cpp perplexity/corpus.cpp perplexity/evaluation.cpp
   LIBRARIES ninfer_engine ninfer_product_logging ninfer::json)
@@ -49,7 +63,11 @@ ninfer_app(ninfer-ngram-profile ninfer_app_ngram_profile
 
 if(NINFER_MULTICALL)
   ninfer_finalize_bundle(ninfer-multicall)
-  foreach(name IN ITEMS ninfer ninfer-serve ninfer-calibrate ninfer-perplexity ninfer-ngram-profile)
+  set(ninfer_multicall_names ninfer ninfer-serve ninfer-calibrate ninfer-perplexity ninfer-ngram-profile)
+  if(NINFER_EI_PREFIX)
+    list(APPEND ninfer_multicall_names ninfer-cnode)
+  endif()
+  foreach(name IN LISTS ninfer_multicall_names)
     add_custom_command(TARGET ninfer-multicall POST_BUILD
       COMMAND ${CMAKE_COMMAND} -E create_symlink ninfer-multicall
               $<TARGET_FILE_DIR:ninfer-multicall>/${name})

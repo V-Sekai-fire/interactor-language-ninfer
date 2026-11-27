@@ -23,6 +23,7 @@ RUN apt-get update \
     && apt-get install --yes --no-install-recommends \
         ccache \
         cmake \
+        erlang-dev \
         file \
         git \
         libavcodec-dev \

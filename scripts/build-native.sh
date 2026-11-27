@@ -16,6 +16,8 @@
 #   NINFER_MULTICALL   ON or OFF: the programs as one multi-call executable, ninfer-multicall,
 #                      with their names as symlinks (apps/CMakeLists.txt)   (default OFF)
 #   NINFER_PREFIX      prebuilt dependency prefix   (default none)
+#   NINFER_EI_PREFIX   erl_interface root, or auto to use the one under /usr/lib/erlang/lib: builds
+#                      the ninfer-cnode Erlang C node                      (default off)
 #   NINFER_JOBS        build parallelism            (default: all cores)
 set -euo pipefail
 
@@ -44,11 +46,21 @@ if command -v ccache >/dev/null; then
 fi
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
 
+ei_args=()
+if [[ -n "${NINFER_EI_PREFIX:-}" ]]; then
+  ei_prefix="$NINFER_EI_PREFIX"
+  if [[ "$ei_prefix" == auto ]]; then
+    ei_prefix="$(ls -d /usr/lib/erlang/lib/erl_interface-* 2>/dev/null | sort -V | tail -n 1)"
+    [[ -n "$ei_prefix" ]] || { printf 'NINFER_EI_PREFIX=auto: no erl_interface under /usr/lib/erlang/lib\n' >&2; exit 2; }
+  fi
+  ei_args=(-DNINFER_EI_PREFIX="$ei_prefix")
+fi
+
 case "${1:-}" in
   configure)
     cmake -S . -B "$build_dir" -G Ninja -DCMAKE_BUILD_TYPE=Release \
       -DCMAKE_CUDA_ARCHITECTURES="$arch" -DBUILD_TESTING="$tests" -DNINFER_MULTICALL="$multicall" \
-      ${prefix_args[@]+"${prefix_args[@]}"} ${launcher_args[@]+"${launcher_args[@]}"} ;;
+      ${prefix_args[@]+"${prefix_args[@]}"} ${ei_args[@]+"${ei_args[@]}"} ${launcher_args[@]+"${launcher_args[@]}"} ;;
   build)
     cmake --build "$build_dir" --parallel "$jobs" ;;
   target)
